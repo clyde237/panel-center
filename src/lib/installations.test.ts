@@ -4,6 +4,7 @@ import type { ApplicationInstallation } from "./contracts.ts";
 import {
   DEFAULT_APPLICATIONS_VIEW_MODE,
   filterInstallations,
+  formatLabel,
   resolveApplicationsViewMode,
   scopeLabel,
   installationSize,
@@ -108,4 +109,37 @@ test("applications view defaults to list and accepts grid", () => {
   assert.equal(resolveApplicationsViewMode("list"), "list");
   assert.equal(resolveApplicationsViewMode("grid"), "grid");
   assert.equal(resolveApplicationsViewMode("unknown"), "list");
+});
+
+test("local connector format and scope labels distinguish user and manual installs", () => {
+  assert.equal(formatLabel("local"), "Local");
+  assert.equal(formatLabel("appimage"), "AppImage");
+  assert.equal(formatLabel("deb"), "DEB");
+
+  const localUser = item({
+    id: "local:user:/home/user/.local/share/applications/com.abdownloadmanager.desktop",
+    name: "AB Download Manager",
+    nativeId: "com.abdownloadmanager",
+    format: "local",
+    scope: "user",
+  });
+  const localSystem = item({
+    id: "local:system:/home/user/.local/share/applications/antigravity.desktop",
+    name: "Antigravity",
+    nativeId: "antigravity",
+    format: "local",
+    scope: "system",
+  });
+
+  assert.equal(scopeLabel(localUser), "Installation locale");
+  assert.equal(scopeLabel(localSystem), "Installation manuelle");
+  assert.equal(
+    filterInstallations([localUser, localSystem], {
+      query: "ab download",
+      format: "local",
+      scope: "user",
+      technical: false,
+    }).length,
+    1,
+  );
 });

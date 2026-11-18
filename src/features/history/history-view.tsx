@@ -12,6 +12,7 @@ import {
 import { Button } from "@/components/ui/button";
 import type { HistoryEntry } from "@/lib/contracts";
 import { clearHistory, isDesktop, listHistory } from "@/lib/desktop";
+import { formatLabel } from "@/lib/installations";
 
 export function HistoryView() {
   const [entries, setEntries] = useState<HistoryEntry[]>([]);
@@ -125,7 +126,7 @@ export function HistoryView() {
                 </td>
                 <td>
                   <span className="format-badge">
-                    {entry.format.toUpperCase()}
+                    {formatLabel(entry.format)}
                   </span>
                 </td>
                 <td className="size-cell text-xs">

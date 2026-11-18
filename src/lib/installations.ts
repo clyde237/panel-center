@@ -1,4 +1,4 @@
-import type { ApplicationInstallation } from "./contracts";
+import type { ApplicationInstallation, PackageFormat } from "./contracts";
 
 export type ApplicationsViewMode = "list" | "grid";
 
@@ -10,8 +10,19 @@ export function resolveApplicationsViewMode(
   return value === "grid" ? "grid" : DEFAULT_APPLICATIONS_VIEW_MODE;
 }
 
+export function formatLabel(format: PackageFormat) {
+  if (format === "appimage") return "AppImage";
+  if (format === "local") return "Local";
+  return format.toUpperCase();
+}
+
 export function scopeLabel(item: ApplicationInstallation) {
   if (item.format === "appimage") return "Fichier portable";
+  if (item.format === "local") {
+    return item.scope === "user"
+      ? "Installation locale"
+      : "Installation manuelle";
+  }
   if (item.scope === "user") return "Utilisateur";
   if (item.installation && !["system", "default"].includes(item.installation)) {
     return `Système · ${item.installation}`;

@@ -2,6 +2,7 @@ pub mod appimage;
 mod command;
 pub mod deb;
 pub mod flatpak;
+pub mod local;
 pub mod snap;
 
 use crate::domain::ApplicationInstallation;

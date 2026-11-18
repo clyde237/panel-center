@@ -31,6 +31,7 @@ import { cn } from "@/lib/utils";
 import {
   DEFAULT_APPLICATIONS_VIEW_MODE,
   filterInstallations,
+  formatLabel,
   type ApplicationsViewMode,
 } from "@/lib/installations";
 
@@ -40,7 +41,7 @@ const pages = {
   history: "Historique",
   settings: "Paramètres",
 };
-const formats = ["deb", "snap", "flatpak", "appimage"] as const;
+const formats = ["deb", "snap", "flatpak", "appimage", "local"] as const;
 
 export function App() {
   const [page, setPage] = useState<Page>("applications");
@@ -192,8 +193,8 @@ export function App() {
                   <strong>Gestionnaire d’applications locales</strong>
                   <p>
                     Retrouvez vos logiciels installés (DEB, Snap, Flatpak,
-                    AppImage) et consultez les conséquences détaillées avant
-                    toute désinstallation.
+                    AppImage, Local) et consultez les conséquences détaillées
+                    avant toute désinstallation.
                   </p>
                 </div>
               </div>
@@ -205,9 +206,7 @@ export function App() {
                   return (
                     <div className="format-status" key={key}>
                       <Box size={17} aria-hidden="true" />
-                      <span>
-                        {key === "appimage" ? "AppImage" : key.toUpperCase()}
-                      </span>
+                      <span>{formatLabel(key)}</span>
                       <small
                         className={cn(
                           status?.state === "ready" && "status-ready",
@@ -263,7 +262,7 @@ export function App() {
                     <option value="all">Tous les formats</option>
                     {formats.map((key) => (
                       <option key={key} value={key}>
-                        {key === "appimage" ? "AppImage" : key.toUpperCase()}
+                        {formatLabel(key)}
                       </option>
                     ))}
                   </select>

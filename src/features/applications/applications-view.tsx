@@ -2,6 +2,7 @@ import { ArrowUpRight, Package } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type { ApplicationInstallation } from "@/lib/contracts";
 import {
+  formatLabel,
   installationSize,
   scopeLabel,
   type ApplicationsViewMode,
@@ -51,7 +52,7 @@ export function ApplicationsView({
                 </header>
                 <div className="app-card-meta">
                   <span className="format-badge">
-                    {item.format.toUpperCase()}
+                    {formatLabel(item.format)}
                   </span>
                   <span className="scope-label">{scopeLabel(item)}</span>
                 </div>
@@ -103,9 +104,7 @@ export function ApplicationsView({
                 </button>
               </td>
               <td>
-                <span className="format-badge">
-                  {item.format.toUpperCase()}
-                </span>
+                <span className="format-badge">{formatLabel(item.format)}</span>
                 <span className="scope-label">{scopeLabel(item)}</span>
               </td>
               <td className="size-cell">

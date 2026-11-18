@@ -1,6 +1,6 @@
 use crate::{
     domain::{AppError, Inventory, PackageFormat, ProviderState, ProviderStatus},
-    providers::{appimage, deb, flatpak, snap, ProviderInventory},
+    providers::{appimage, deb, flatpak, local, snap, ProviderInventory},
 };
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -9,33 +9,36 @@ pub fn collect() -> Inventory {
 }
 
 pub fn collect_with_paths(paths: &[String]) -> Inventory {
-    let (deb_result, snap_result, flatpak_result, appimage_result) = std::thread::scope(|scope| {
-        let deb_job = scope.spawn(|| {
-            deb::inventory().map(|value| ProviderInventory {
-                installations: value.installations,
-                warnings: value.warning.into_iter().collect(),
-                locations: vec![],
-            })
-        });
-        let snap_job = scope.spawn(snap::inventory);
-        let flatpak_job = scope.spawn(flatpak::inventory);
-        let appimage_job = scope.spawn(|| appimage::inventory(paths));
-        let recover =
-            |job: std::thread::ScopedJoinHandle<'_, Result<ProviderInventory, AppError>>| {
-                job.join().unwrap_or_else(|_| {
-                    Err(AppError::new(
-                        "PROVIDER_FAILED",
-                        "La lecture du connecteur a été interrompue.",
-                    ))
+    let (deb_result, snap_result, flatpak_result, appimage_result, local_result) =
+        std::thread::scope(|scope| {
+            let deb_job = scope.spawn(|| {
+                deb::inventory().map(|value| ProviderInventory {
+                    installations: value.installations,
+                    warnings: value.warning.into_iter().collect(),
+                    locations: vec![],
                 })
-            };
-        (
-            recover(deb_job),
-            recover(snap_job),
-            recover(flatpak_job),
-            recover(appimage_job),
-        )
-    });
+            });
+            let snap_job = scope.spawn(snap::inventory);
+            let flatpak_job = scope.spawn(flatpak::inventory);
+            let appimage_job = scope.spawn(|| appimage::inventory(paths));
+            let local_job = scope.spawn(local::inventory);
+            let recover =
+                |job: std::thread::ScopedJoinHandle<'_, Result<ProviderInventory, AppError>>| {
+                    job.join().unwrap_or_else(|_| {
+                        Err(AppError::new(
+                            "PROVIDER_FAILED",
+                            "La lecture du connecteur a été interrompue.",
+                        ))
+                    })
+                };
+            (
+                recover(deb_job),
+                recover(snap_job),
+                recover(flatpak_job),
+                recover(appimage_job),
+                recover(local_job),
+            )
+        });
     let mut inventory = Inventory {
         installations: vec![],
         providers: vec![],
@@ -50,6 +53,7 @@ pub fn collect_with_paths(paths: &[String]) -> Inventory {
         (PackageFormat::Snap, snap_result),
         (PackageFormat::Flatpak, flatpak_result),
         (PackageFormat::Appimage, appimage_result),
+        (PackageFormat::Local, local_result),
     ] {
         merge(&mut inventory, format, result);
     }
