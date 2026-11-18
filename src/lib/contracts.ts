@@ -37,6 +37,26 @@ export interface UninstallPlanOptions {
   removeData: boolean;
 }
 
+export interface DebAffectedPackage {
+  name: string;
+  version: string;
+  installedSize: number | null;
+  description: string;
+  isTarget: boolean;
+  isProtected: boolean;
+  action: "remove" | "purge";
+}
+
+export interface DebDependencyPreview {
+  targetPackage: string;
+  removedPackages: DebAffectedPackage[];
+  dependentPackages: DebAffectedPackage[];
+  newlyInstalledPackages: string[];
+  autoremoveCandidates: string[];
+  blockingDependents: string[];
+  totalFreedBytes: number | null;
+}
+
 export interface UninstallPlan {
   id: string;
   targetId: string;
@@ -45,8 +65,10 @@ export interface UninstallPlan {
   scope: "system" | "user";
   nativeId: string;
   targetPath?: string | null;
+  targetInstallation?: string | null;
   options: UninstallPlanOptions;
   affectedItems: string[];
+  debPreview?: DebDependencyPreview | null;
   dataImpact: string;
   estimatedFreedSpace: string | null;
   requiresAuth: boolean;

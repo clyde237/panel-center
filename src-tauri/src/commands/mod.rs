@@ -57,17 +57,31 @@ pub fn get_system_info() -> SystemInfo {
 }
 
 #[tauri::command]
-pub fn prepare_uninstall(
+pub async fn prepare_uninstall(
     installation: ApplicationInstallation,
     options: Option<UninstallPlanOptions>,
 ) -> Result<UninstallPlan, AppError> {
     let opts = options.unwrap_or_default();
-    manager().prepare(&installation, opts)
+    tauri::async_runtime::spawn_blocking(move || manager().prepare(&installation, opts))
+        .await
+        .map_err(|_| {
+            AppError::new(
+                "PREPARE_INTERRUPTED",
+                "La préparation de la désinstallation a été interrompue.",
+            )
+        })?
 }
 
 #[tauri::command]
-pub fn confirm_uninstall(plan_id: String) -> Result<Operation, AppError> {
-    manager().confirm(&plan_id)
+pub async fn confirm_uninstall(plan_id: String) -> Result<Operation, AppError> {
+    tauri::async_runtime::spawn_blocking(move || manager().confirm(&plan_id))
+        .await
+        .map_err(|_| {
+            AppError::new(
+                "UNINSTALL_INTERRUPTED",
+                "L’exécution de la désinstallation a été interrompue.",
+            )
+        })?
 }
 
 #[tauri::command]

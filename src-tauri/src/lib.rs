@@ -5,6 +5,7 @@ pub mod services;
 pub mod storage;
 
 pub fn run() {
+    services::transactions::reconcile_interrupted_operations();
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
             commands::list_installations,

@@ -23,6 +23,7 @@ import {
   prepareUninstall,
 } from "@/lib/desktop";
 import { scopeLabel } from "@/lib/installations";
+import { formatSize } from "@/lib/utils";
 
 interface UninstallDialogProps {
   installation: ApplicationInstallation | null;
@@ -54,7 +55,9 @@ export function UninstallDialog({
       setError(null);
       setSubmitting(false);
       setOperation(null);
-      loadPlan(installation, { purgeConfig, removeData });
+      setPurgeConfig(false);
+      setRemoveData(false);
+      loadPlan(installation, { purgeConfig: false, removeData: false });
     }
     if (!installation && el?.open) {
       el.close();
@@ -177,22 +180,40 @@ export function UninstallDialog({
                   </div>
                 </div>
               ) : plan?.isBlocked ? (
-                <div className="rounded-md border border-amber-500/30 bg-amber-500/10 p-4 text-sm text-amber-800 dark:text-amber-300">
-                  <div className="flex items-start gap-3">
-                    <ShieldAlert
-                      size={20}
-                      className="shrink-0 mt-0.5 text-amber-600 dark:text-amber-400"
-                    />
-                    <div className="space-y-1">
-                      <strong className="font-semibold">
-                        Suppression bloquée pour la sécurité du système
-                      </strong>
-                      <p>
-                        {plan.blockedReason ??
-                          "Ce composant est essentiel au fonctionnement du système et ne peut pas être retiré."}
-                      </p>
+                <div className="space-y-3">
+                  <div className="rounded-md border border-amber-500/30 bg-amber-500/10 p-4 text-sm text-amber-800 dark:text-amber-300">
+                    <div className="flex items-start gap-3">
+                      <ShieldAlert
+                        size={20}
+                        className="shrink-0 mt-0.5 text-amber-600 dark:text-amber-400"
+                      />
+                      <div className="space-y-1">
+                        <strong className="font-semibold">
+                          Suppression bloquée pour la sécurité du système
+                        </strong>
+                        <p>
+                          {plan.blockedReason ??
+                            "Ce composant est essentiel au fonctionnement du système et ne peut pas être retiré."}
+                        </p>
+                      </div>
                     </div>
                   </div>
+                  {plan.debPreview &&
+                    plan.debPreview.blockingDependents.length > 0 && (
+                      <div className="space-y-1.5">
+                        <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+                          Dépendances bloquantes détectées par APT (
+                          {plan.debPreview.blockingDependents.length})
+                        </p>
+                        <ul className="max-h-32 overflow-y-auto rounded-md border bg-background p-2 text-xs font-mono space-y-1">
+                          {plan.debPreview.blockingDependents.map((dep) => (
+                            <li key={dep} className="text-foreground break-all">
+                              • {dep}
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
                 </div>
               ) : (
                 <div className="space-y-4">
@@ -205,19 +226,145 @@ export function UninstallDialog({
                     </p>
                   </div>
 
-                  {plan && plan.affectedItems.length > 0 && (
-                    <div className="space-y-1.5">
-                      <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
-                        Éléments concernés ({plan.affectedItems.length})
-                      </p>
-                      <ul className="max-h-32 overflow-y-auto rounded-md border bg-background p-2 text-xs font-mono space-y-1">
-                        {plan.affectedItems.map((item, index) => (
-                          <li key={index} className="text-foreground break-all">
-                            • {item}
-                          </li>
-                        ))}
-                      </ul>
+                  {plan?.debPreview ? (
+                    <div className="space-y-3">
+                      {plan.debPreview.dependentPackages.length > 0 && (
+                        <div className="rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-800 dark:text-amber-300 flex items-start gap-2.5">
+                          <AlertTriangle
+                            size={16}
+                            className="shrink-0 mt-0.5 text-amber-600 dark:text-amber-400"
+                            aria-hidden="true"
+                          />
+                          <span>
+                            <strong>
+                              {plan.debPreview.dependentPackages.length} autre
+                              {plan.debPreview.dependentPackages.length > 1
+                                ? "s"
+                                : ""}{" "}
+                              paquet
+                              {plan.debPreview.dependentPackages.length > 1
+                                ? "s"
+                                : ""}{" "}
+                              dépendant
+                              {plan.debPreview.dependentPackages.length > 1
+                                ? "s"
+                                : ""}
+                            </strong>{" "}
+                            ser
+                            {plan.debPreview.dependentPackages.length > 1
+                              ? "ont"
+                              : "a"}{" "}
+                            également retiré
+                            {plan.debPreview.dependentPackages.length > 1
+                              ? "s"
+                              : ""}{" "}
+                            par APT. Vérifiez la liste complète ci-dessous avant
+                            de confirmer.
+                          </span>
+                        </div>
+                      )}
+
+                      <div className="space-y-1.5">
+                        <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+                          Paquets DEB retirés par APT (
+                          {plan.debPreview.removedPackages.length})
+                        </p>
+                        <ul className="max-h-44 overflow-y-auto rounded-md border bg-background divide-y divide-border/60 text-xs">
+                          {plan.debPreview.removedPackages.map((pkg) => (
+                            <li
+                              key={pkg.name}
+                              className="p-2.5 flex items-start justify-between gap-3"
+                            >
+                              <div className="min-w-0 space-y-0.5">
+                                <div className="flex flex-wrap items-center gap-1.5">
+                                  <span className="font-mono font-medium text-foreground break-all">
+                                    {pkg.name}
+                                  </span>
+                                  <span className="format-badge">
+                                    {pkg.isTarget ? "CIBLE" : "DÉPENDANCE"}
+                                  </span>
+                                  {pkg.action === "purge" && (
+                                    <span className="format-badge">PURGE</span>
+                                  )}
+                                </div>
+                                {pkg.description && (
+                                  <p className="text-[11px] text-muted-foreground">
+                                    {pkg.description}
+                                  </p>
+                                )}
+                                {pkg.version && (
+                                  <p className="text-[10px] font-mono text-muted-foreground">
+                                    v{pkg.version}
+                                  </p>
+                                )}
+                              </div>
+                              {pkg.installedSize !== null && (
+                                <span className="size-cell text-[11px] shrink-0">
+                                  {formatSize(pkg.installedSize)}
+                                </span>
+                              )}
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+
+                      {plan.debPreview.newlyInstalledPackages.length > 0 && (
+                        <div className="space-y-1.5">
+                          <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+                            Paquets de remplacement proposés par APT (
+                            {plan.debPreview.newlyInstalledPackages.length})
+                          </p>
+                          <ul className="max-h-24 overflow-y-auto rounded-md border bg-background p-2 text-xs font-mono space-y-1">
+                            {plan.debPreview.newlyInstalledPackages.map(
+                              (pkg) => (
+                                <li
+                                  key={pkg}
+                                  className="text-foreground break-all"
+                                >
+                                  + {pkg}
+                                </li>
+                              ),
+                            )}
+                          </ul>
+                        </div>
+                      )}
+
+                      {plan.debPreview.autoremoveCandidates.length > 0 && (
+                        <details className="rounded-md border border-border/80 bg-muted/30 p-2.5 text-xs">
+                          <summary className="cursor-pointer font-medium text-muted-foreground">
+                            Dépendances automatiques non requises (
+                            {plan.debPreview.autoremoveCandidates.length}) —
+                            conservées (autoremove désactivé)
+                          </summary>
+                          <ul className="mt-2 max-h-28 overflow-y-auto font-mono text-[11px] text-muted-foreground space-y-0.5 pl-2">
+                            {plan.debPreview.autoremoveCandidates.map((pkg) => (
+                              <li key={pkg} className="break-all">
+                                • {pkg}
+                              </li>
+                            ))}
+                          </ul>
+                        </details>
+                      )}
                     </div>
+                  ) : (
+                    plan &&
+                    plan.affectedItems.length > 0 && (
+                      <div className="space-y-1.5">
+                        <p className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">
+                          Éléments concernés ({plan.affectedItems.length})
+                        </p>
+                        <ul className="max-h-32 overflow-y-auto rounded-md border bg-background p-2 text-xs font-mono space-y-1">
+                          {plan.affectedItems.map((item, index) => (
+                            <li
+                              key={index}
+                              className="text-foreground break-all"
+                            >
+                              • {item}
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )
                   )}
 
                   {plan?.estimatedFreedSpace && (
@@ -304,8 +451,9 @@ export function UninstallDialog({
                 Désinstallation en cours…
               </h3>
               <p className="text-xs text-muted-foreground max-w-sm">
-                Veuillez patienter pendant le traitement et la vérification
-                locale de la suppression.
+                {plan?.requiresAuth
+                  ? "Une fenêtre d’autorisation administrateur (Polkit) peut s’ouvrir. Veuillez confirmer ou annuler l’authentification."
+                  : "Veuillez patienter pendant le traitement et la vérification locale de la suppression."}
               </p>
             </div>
           )}
@@ -324,6 +472,24 @@ export function UninstallDialog({
                         Désinstallation réussie
                       </strong>
                       <p className="text-xs">{operation.message}</p>
+                    </div>
+                  </div>
+                </div>
+              ) : operation?.status === "cancelled" ? (
+                <div className="rounded-md border border-amber-500/30 bg-amber-500/10 p-4 text-amber-800 dark:text-amber-300">
+                  <div className="flex items-start gap-3">
+                    <ShieldAlert
+                      size={22}
+                      className="shrink-0 mt-0.5 text-amber-600 dark:text-amber-400"
+                    />
+                    <div className="space-y-1">
+                      <strong className="font-semibold text-sm">
+                        Désinstallation annulée
+                      </strong>
+                      <p className="text-xs">
+                        {operation.message ||
+                          "Autorisation administrateur annulée. Aucune modification n’a été effectuée."}
+                      </p>
                     </div>
                   </div>
                 </div>

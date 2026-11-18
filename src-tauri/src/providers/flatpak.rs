@@ -64,13 +64,8 @@ fn parse(output: &str) -> Result<ProviderInventory, AppError> {
         item.version = fields[3].into();
         item.description = fields[7].into();
         item.reported_size = (!fields[6].is_empty()).then(|| fields[6].into());
-        let is_user = scope == "user";
-        item.can_uninstall = is_user;
-        item.unavailable_reason = if is_user {
-            String::new()
-        } else {
-            "La désinstallation d’une application Flatpak système requiert des privilèges administrateur.".into()
-        };
+        item.can_uninstall = true;
+        item.unavailable_reason = String::new();
         result.installations.push(item);
     }
     Ok(result)

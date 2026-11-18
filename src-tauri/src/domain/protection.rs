@@ -33,11 +33,33 @@ pub const PROTECTED_PACKAGES: &[&str] = &[
     "dbus",
 ];
 
+pub const PROTECTED_SNAPS: &[&str] = &[
+    "snapd",
+    "bare",
+    "core",
+    "core18",
+    "core20",
+    "core22",
+    "core24",
+    "core26",
+    "pc",
+    "pc-kernel",
+    "snapd-desktop-integration",
+];
+
 pub fn is_protected_deb(native_id: &str) -> bool {
     let normalized = native_id.split(':').next().unwrap_or(native_id).trim();
     PROTECTED_PACKAGES.contains(&normalized)
         || normalized.starts_with("linux-image-")
         || normalized.starts_with("linux-modules-")
+}
+
+pub fn is_protected_snap(name: &str) -> bool {
+    let normalized = name.trim();
+    let is_core_base = normalized
+        .strip_prefix("core")
+        .is_some_and(|rest| !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit()));
+    PROTECTED_SNAPS.contains(&normalized) || is_core_base
 }
 
 #[cfg(test)]
@@ -67,5 +89,17 @@ mod tests {
         assert!(!is_protected_deb("vlc"));
         assert!(!is_protected_deb("gimp"));
         assert!(!is_protected_deb("firefox"));
+    }
+
+    #[test]
+    fn identifies_protected_system_snaps() {
+        assert!(is_protected_snap("snapd"));
+        assert!(is_protected_snap("core24"));
+        assert!(is_protected_snap("core28"));
+        assert!(is_protected_snap("bare"));
+        assert!(is_protected_snap("snapd-desktop-integration"));
+        assert!(!is_protected_snap("firefox"));
+        assert!(!is_protected_snap("vlc"));
+        assert!(!is_protected_snap("coreutils-demo"));
     }
 }
