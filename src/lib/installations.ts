@@ -1,5 +1,15 @@
 import type { ApplicationInstallation } from "./contracts";
 
+export type ApplicationsViewMode = "list" | "grid";
+
+export const DEFAULT_APPLICATIONS_VIEW_MODE: ApplicationsViewMode = "list";
+
+export function resolveApplicationsViewMode(
+  value: unknown,
+): ApplicationsViewMode {
+  return value === "grid" ? "grid" : DEFAULT_APPLICATIONS_VIEW_MODE;
+}
+
 export function scopeLabel(item: ApplicationInstallation) {
   if (item.format === "appimage") return "Fichier portable";
   if (item.scope === "user") return "Utilisateur";

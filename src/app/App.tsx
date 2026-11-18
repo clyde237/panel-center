@@ -1,13 +1,13 @@
 import { useEffect, useState } from "react";
 import {
   AlertCircle,
-  ArrowUpRight,
   Box,
   ChevronRight,
   FolderSearch,
   History,
   Info,
   LayoutGrid,
+  List,
   LoaderCircle,
   Monitor,
   Package,
@@ -18,6 +18,7 @@ import {
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { ApplicationsView } from "@/features/applications/applications-view";
 import { InstallationDetails } from "@/features/applications/installation-details";
 import { UninstallDialog } from "@/features/uninstall/uninstall-dialog";
 import { HistoryView } from "@/features/history/history-view";
@@ -26,11 +27,11 @@ import { useInventory } from "@/features/applications/use-inventory";
 import type { ApplicationInstallation, SystemInfo } from "@/lib/contracts";
 import { getPreferences, getSystemInfo, isDesktop } from "@/lib/desktop";
 import { applyTheme } from "@/lib/theme";
-import { cn, formatSize } from "@/lib/utils";
+import { cn } from "@/lib/utils";
 import {
+  DEFAULT_APPLICATIONS_VIEW_MODE,
   filterInstallations,
-  installationSize,
-  scopeLabel,
+  type ApplicationsViewMode,
 } from "@/lib/installations";
 
 type Page = "applications" | "history" | "settings";
@@ -47,6 +48,9 @@ export function App() {
   const [format, setFormat] = useState("all");
   const [scope, setScope] = useState("all");
   const [technical, setTechnical] = useState(false);
+  const [viewMode, setViewMode] = useState<ApplicationsViewMode>(
+    DEFAULT_APPLICATIONS_VIEW_MODE,
+  );
   const [selection, setSelection] = useState<ApplicationInstallation | null>(
     null,
   );
@@ -267,6 +271,36 @@ export function App() {
                     <option value="user">Utilisateur</option>
                     <option value="system">Système</option>
                   </select>
+                  <div
+                    className="view-toggle"
+                    role="group"
+                    aria-label="Mode d’affichage"
+                  >
+                    <button
+                      type="button"
+                      className={cn(
+                        "view-toggle-btn",
+                        viewMode === "list" && "view-toggle-btn-active",
+                      )}
+                      aria-pressed={viewMode === "list"}
+                      onClick={() => setViewMode("list")}
+                    >
+                      <List size={15} aria-hidden="true" />
+                      <span>Liste</span>
+                    </button>
+                    <button
+                      type="button"
+                      className={cn(
+                        "view-toggle-btn",
+                        viewMode === "grid" && "view-toggle-btn-active",
+                      )}
+                      aria-pressed={viewMode === "grid"}
+                      onClick={() => setViewMode("grid")}
+                    >
+                      <LayoutGrid size={15} aria-hidden="true" />
+                      <span>Grille</span>
+                    </button>
+                  </div>
                 </div>
                 <div className="list-meta">
                   <span aria-live="polite">
@@ -334,63 +368,11 @@ export function App() {
                   </div>
                 ) : (
                   <>
-                    <div className="table-scroll">
-                      <table className="applications-table">
-                        <thead>
-                          <tr>
-                            <th scope="col">Application</th>
-                            <th scope="col">Format</th>
-                            <th scope="col">Taille installée</th>
-                            <th scope="col">
-                              <span className="sr-only">Détails</span>
-                            </th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {filtered.map((item) => (
-                            <tr key={item.id}>
-                              <td>
-                                <button
-                                  className="application-name"
-                                  onClick={() => setSelection(item)}
-                                >
-                                  <span className="app-icon">
-                                    <Package size={20} aria-hidden="true" />
-                                  </span>
-                                  <span>
-                                    <strong>{item.name}</strong>
-                                    <small>
-                                      {item.version || "Version non disponible"}
-                                    </small>
-                                  </span>
-                                </button>
-                              </td>
-                              <td>
-                                <span className="format-badge">
-                                  {item.format.toUpperCase()}
-                                </span>
-                                <span className="scope-label">
-                                  {scopeLabel(item)}
-                                </span>
-                              </td>
-                              <td className="size-cell">
-                                {installationSize(item, formatSize)}
-                              </td>
-                              <td>
-                                <Button
-                                  variant="ghost"
-                                  size="icon"
-                                  aria-label={`Voir les détails de ${item.name}`}
-                                  onClick={() => setSelection(item)}
-                                >
-                                  <ArrowUpRight />
-                                </Button>
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
+                    <ApplicationsView
+                      items={filtered}
+                      viewMode={viewMode}
+                      onSelect={setSelection}
+                    />
                     <div className="list-footer">
                       <Info size={14} aria-hidden="true" />
                       Les tailles déclarées incluent des composants qui peuvent
