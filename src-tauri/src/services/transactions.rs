@@ -44,35 +44,57 @@ fn current_timestamp() -> u64 {
         .as_secs()
 }
 
-pub fn is_dpkg_locked() -> bool {
-    if let Ok(entries) = fs::read_dir("/proc") {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                if name.chars().all(|c| c.is_ascii_digit()) {
-                    let comm_path = path.join("comm");
-                    if let Ok(comm) = fs::read_to_string(comm_path) {
-                        let proc_name = comm.trim();
-                        if matches!(
-                            proc_name,
-                            "apt"
-                                | "apt-get"
-                                | "dpkg"
-                                | "dpkg-deb"
-                                | "unattended-upgr"
-                                | "aptitude"
-                                | "synaptic"
-                                | "packagekitd"
-                                | "apt-fast"
-                        ) {
-                            return true;
-                        }
-                    }
-                }
-            }
+#[cfg(target_os = "linux")]
+fn linux_dev_major_minor(dev: u64) -> (u64, u64) {
+    let major = ((dev >> 8) & 0xfff) | ((dev >> 32) & !0xfff);
+    let minor = (dev & 0xff) | ((dev >> 12) & !0xff);
+    (major, minor)
+}
+
+pub(crate) fn proc_locks_has_write_lock(locks_content: &str, lock_ids: &[String]) -> bool {
+    if lock_ids.is_empty() {
+        return false;
+    }
+    for line in locks_content.lines() {
+        let tokens: Vec<&str> = line.split_whitespace().collect();
+        if tokens.len() < 6 || tokens.get(1) == Some(&"->") {
+            continue;
+        }
+        if tokens[3] == "WRITE" && lock_ids.iter().any(|id| id == tokens[5]) {
+            return true;
         }
     }
     false
+}
+
+/// Checks whether APT/dpkg actually holds a kernel write lock on `/var/lib/dpkg/lock-frontend`
+/// or `/var/lib/dpkg/lock` by matching their `(major:minor:inode)` against `/proc/locks`.
+/// Avoids false positives from idle daemons like `unattended-upgrade-shutdown` or `packagekitd`.
+pub fn is_dpkg_locked() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::fs::MetadataExt;
+
+        let lock_paths = ["/var/lib/dpkg/lock-frontend", "/var/lib/dpkg/lock"];
+        let mut lock_ids = Vec::new();
+        for lock_path in &lock_paths {
+            if let Ok(meta) = fs::metadata(lock_path) {
+                let (major, minor) = linux_dev_major_minor(meta.dev());
+                lock_ids.push(format!("{major:02x}:{minor:02x}:{}", meta.ino()));
+            }
+        }
+        if lock_ids.is_empty() {
+            return false;
+        }
+        if let Ok(locks_content) = fs::read_to_string("/proc/locks") {
+            return proc_locks_has_write_lock(&locks_content, &lock_ids);
+        }
+        false
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        false
+    }
 }
 
 impl TransactionManager {
@@ -1879,5 +1901,21 @@ mod tests {
         let _ = fs::remove_dir_all(&temp_dir);
         std::env::remove_var("PANEL_CENTER_DATA_DIR");
         std::env::remove_var("PANEL_CENTER_CONFIG_DIR");
+    }
+
+    #[test]
+    fn proc_locks_matches_only_active_dpkg_write_locks() {
+        let targets = vec!["08:01:10224209".into(), "08:01:10224208".into()];
+        let idle = "\
+1: POSIX  ADVISORY  READ 19368 08:01:10224209 0 EOF
+2: FLOCK  ADVISORY  WRITE 1780 08:01:9999999 0 EOF
+";
+        assert!(!proc_locks_has_write_lock(idle, &targets));
+
+        let active = "\
+1: POSIX  ADVISORY  READ 19368 08:01:5658061 128 128
+2: POSIX  ADVISORY  WRITE 22451 08:01:10224209 0 EOF
+";
+        assert!(proc_locks_has_write_lock(active, &targets));
     }
 }
