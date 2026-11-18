@@ -1,0 +1,71 @@
+pub const PROTECTED_PACKAGES: &[&str] = &[
+    "apt",
+    "dpkg",
+    "base-files",
+    "base-passwd",
+    "coreutils",
+    "libc6",
+    "libgcc-s1",
+    "libstdc++6",
+    "systemd",
+    "systemd-sysv",
+    "init",
+    "login",
+    "passwd",
+    "sudo",
+    "ubuntu-minimal",
+    "ubuntu-standard",
+    "ubuntu-desktop",
+    "ubuntu-desktop-minimal",
+    "gnome-shell",
+    "gdm3",
+    "xorg",
+    "xserver-xorg",
+    "grub-common",
+    "grub2-common",
+    "grub-pc",
+    "grub-efi-amd64",
+    "linux-base",
+    "linux-image-generic",
+    "polkitd",
+    "policykit-1",
+    "panel-center",
+    "dbus",
+];
+
+pub fn is_protected_deb(native_id: &str) -> bool {
+    let normalized = native_id.split(':').next().unwrap_or(native_id).trim();
+    PROTECTED_PACKAGES.contains(&normalized)
+        || normalized.starts_with("linux-image-")
+        || normalized.starts_with("linux-modules-")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn identifies_vital_ubuntu_packages_as_protected() {
+        assert!(is_protected_deb("apt"));
+        assert!(is_protected_deb("apt:amd64"));
+        assert!(is_protected_deb("dpkg"));
+        assert!(is_protected_deb("systemd"));
+        assert!(is_protected_deb("ubuntu-desktop"));
+        assert!(is_protected_deb("libc6"));
+        assert!(is_protected_deb("panel-center"));
+        assert!(is_protected_deb("grub-common"));
+        assert!(is_protected_deb("grub2-common"));
+        assert!(is_protected_deb("linux-image-generic"));
+        assert!(is_protected_deb("linux-image-6.8.0-45-generic"));
+        assert!(is_protected_deb("linux-modules-6.8.0-45-generic"));
+        assert!(is_protected_deb("polkitd"));
+        assert!(is_protected_deb("dbus"));
+    }
+
+    #[test]
+    fn allows_regular_applications_to_be_uninstalled() {
+        assert!(!is_protected_deb("vlc"));
+        assert!(!is_protected_deb("gimp"));
+        assert!(!is_protected_deb("firefox"));
+    }
+}

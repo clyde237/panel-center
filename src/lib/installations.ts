@@ -1,0 +1,45 @@
+import type { ApplicationInstallation } from "./contracts";
+
+export function scopeLabel(item: ApplicationInstallation) {
+  if (item.format === "appimage") return "Fichier portable";
+  if (item.scope === "user") return "Utilisateur";
+  if (item.installation && !["system", "default"].includes(item.installation)) {
+    return `Système · ${item.installation}`;
+  }
+  return "Système";
+}
+
+export function installationSize(
+  item: ApplicationInstallation,
+  exactSize: (value: number | null) => string,
+) {
+  return item.installedSize !== null
+    ? exactSize(item.installedSize)
+    : item.reportedSize || "Non disponible";
+}
+
+function searchable(value: string) {
+  return value
+    .normalize("NFD")
+    .replace(/\p{Diacritic}/gu, "")
+    .toLocaleLowerCase("fr");
+}
+
+export function filterInstallations(
+  items: ApplicationInstallation[],
+  options: {
+    query: string;
+    format: string;
+    scope: string;
+    technical: boolean;
+  },
+) {
+  const query = searchable(options.query.trim());
+  return items.filter(
+    (item) =>
+      (options.technical || item.isDesktopApplication) &&
+      (options.format === "all" || options.format === item.format) &&
+      (options.scope === "all" || options.scope === item.scope) &&
+      searchable(`${item.name} ${item.nativeId}`).includes(query),
+  );
+}

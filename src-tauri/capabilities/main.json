@@ -1,0 +1,17 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "main",
+  "description": "Consultation de l’inventaire, désinstallation, historique et préférences depuis la fenêtre principale.",
+  "windows": ["main"],
+  "permissions": [
+    "allow-list-installations",
+    "allow-get-system-info",
+    "allow-prepare-uninstall",
+    "allow-confirm-uninstall",
+    "allow-get-operation",
+    "allow-list-history",
+    "allow-clear-history",
+    "allow-get-preferences",
+    "allow-update-preferences"
+  ]
+}
