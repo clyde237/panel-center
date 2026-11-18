@@ -2,6 +2,24 @@
 
 Date : 18 novembre 2026.
 
+## Livraison V1 : vue grille, désinstallations privilégiées Polkit, aperçu APT complet, SQLite et paquet `.deb`
+
+- **Vue grille / liste** : sélecteur accessible Liste / Grille dans l’inventaire (vue liste par défaut, alignement CSS `subgrid`, thèmes clair/sombre et responsive).
+- **Désinstallations privilégiées via Polkit (`pkexec`)** :
+  - Support DEB/APT, Snap et Flatpak système / installations nommées sans passage par un shell, avec validation stricte par liste blanche des identifiants et commandes Tauri asynchrones (`spawn_blocking`).
+  - Distinction explicite entre annulation Polkit (`126` → `Cancelled`), refus (`127` → `AUTH_DENIED`) et échec technique, avec vérification post-suppression (`dpkg-query`, `snap list`, `flatpak info`).
+- **Aperçu complet des dépendances APT** :
+  - Simulation `apt-get --simulate` enrichie en un lot `dpkg-query` (distinction paquet ciblé vs dépendances retirées en cascade, remplacements proposés par APT, dépendances automatiques conservées avec `autoremove` désactivé, dépendances bloquantes du solveur APT et espace total libéré estimé).
+  - Blocage automatique si un paquet `Essential`/`Protected` ou vital Ubuntu est touché en cascade, et réévaluation avant exécution (`PLAN_CHANGED`).
+- **Stockage SQLite versionné (`rusqlite`)** :
+  - Base locale `$XDG_DATA_HOME/panel-center/panel_center.db` (mode WAL, `foreign_keys = ON`), migrations versionnées `v1` (`preferences`, `operation_history`) et `v2` (`in_flight_operations`), reprise automatique des anciens fichiers JSON et réconciliation au démarrage des opérations interrompues sans inventer de succès.
+- **Livraison paquet `.deb`** :
+  - Icônes desktop (`32x32`, `64x64`, `128x128`, `128x128@2x`, `icon.png`) et logo frontend (`public/panel-center-logo.png`) générés depuis `logo.png`.
+  - Construction release réussie via `npm run desktop:build` → `src-tauri/target/release/bundle/deb/Panel Center_0.1.0_amd64.deb` (vérifié via `dpkg-deb --info` et `dpkg-deb --contents`).
+- **Suite de contrôles (`npm run check`)** :
+  - 53 tests Rust réussis, 20 tests TypeScript réussis, Prettier, `rustfmt`, TypeScript strict, build Vite et Clippy (`-D warnings`) : 100 % conformes sans avertissement.
+- **Reste à valider sur poste / VM Ubuntu cible** : installation réelle (`sudo apt install ./Panel\ Center_0.1.0_amd64.deb`), vérification visuelle/clavier en session graphique et test de bout en bout Polkit sur des logiciels jetables.
+
 ## Étape 3 & 4 : désinstallations, transactions, persistance et préférences
 
 - 37 tests Rust réussis :

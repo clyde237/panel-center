@@ -98,7 +98,13 @@ export function App() {
       </a>
       <aside className="sidebar">
         <div className="brand">
-          <img src="/panel-center.svg" width="34" height="34" alt="" />
+          <img
+            src="/panel-center-logo.png"
+            width="34"
+            height="34"
+            alt=""
+            className="rounded-md"
+          />
           <div>
             Panel Center<span>Applications Ubuntu</span>
           </div>
