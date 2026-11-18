@@ -22,7 +22,7 @@ import {
   isDesktop,
   prepareUninstall,
 } from "@/lib/desktop";
-import { scopeLabel } from "@/lib/installations";
+import { formatLabel, scopeLabel } from "@/lib/installations";
 import { formatSize } from "@/lib/utils";
 
 interface UninstallDialogProps {
@@ -144,7 +144,7 @@ export function UninstallDialog({
                   Désinstallation de {installation.name}
                 </h2>
                 <p className="text-xs text-muted-foreground">
-                  {installation.format.toUpperCase()} ·{" "}
+                  {formatLabel(installation.format)} ·{" "}
                   {scopeLabel(installation)}
                 </p>
               </div>

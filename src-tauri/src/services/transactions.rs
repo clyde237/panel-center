@@ -118,10 +118,11 @@ impl TransactionManager {
         drop(op_guard);
 
         // Validation against flag injection and malformed identifiers
+        let disallow_whitespace = installation.format != PackageFormat::Local;
         if installation.native_id.starts_with('-')
             || installation
                 .native_id
-                .contains(|c: char| c.is_whitespace() || c == '\0')
+                .contains(|c: char| c == '\0' || (disallow_whitespace && c.is_whitespace()))
         {
             return Err(AppError::new(
                 "INVALID_IDENTIFIER",
@@ -130,7 +131,9 @@ impl TransactionManager {
         }
 
         if let Some(ref r) = installation.reference {
-            if r.starts_with('-') || r.contains(|c: char| c.is_whitespace() || c == '\0') {
+            if r.starts_with('-')
+                || r.contains(|c: char| c == '\0' || (disallow_whitespace && c.is_whitespace()))
+            {
                 return Err(AppError::new(
                     "INVALID_IDENTIFIER",
                     "La référence de l’application contient des caractères non autorisés.",
@@ -147,6 +150,7 @@ impl TransactionManager {
                 PackageFormat::Snap => "snap",
                 PackageFormat::Flatpak => "flatpak",
                 PackageFormat::Appimage => "appimage",
+                PackageFormat::Local => "local",
             },
             installation.native_id.replace(['/', ':', ' '], "_"),
             now,
@@ -384,10 +388,82 @@ impl TransactionManager {
                             .into();
                     (false, items, impact, blocked, reason)
                 }
+                PackageFormat::Local => {
+                    let mut items = Vec::new();
+                    let (blocked, reason) = if installation.scope != "user" {
+                        (
+                            true,
+                            Some(
+                                "Installation manuelle système (/opt ou /usr/local) : retirez-la via son propre désinstalleur ou manuellement par sécurité."
+                                    .into(),
+                            ),
+                        )
+                    } else if let Some(ref dir_str) = installation.installation {
+                        let dir = PathBuf::from(dir_str);
+                        if let Err(err) = validate_safe_local_install_dir(&dir) {
+                            (true, Some(err.message))
+                        } else if !dir.exists() {
+                            (
+                                true,
+                                Some(
+                                    "Le dossier d’installation local est introuvable (déjà supprimé ou déplacé)."
+                                        .into(),
+                                ),
+                            )
+                        } else if let Some(ref launcher_str) = installation.reference {
+                            if let Err(err) =
+                                validate_safe_user_desktop_launcher(Path::new(launcher_str))
+                            {
+                                (true, Some(err.message))
+                            } else {
+                                (false, None)
+                            }
+                        } else {
+                            (false, None)
+                        }
+                    } else if let Some(ref path_str) = installation.path {
+                        let exe = PathBuf::from(path_str);
+                        if let Err(err) = validate_safe_user_file_path(&exe) {
+                            (true, Some(err.message))
+                        } else if !exe.exists() {
+                            (
+                                true,
+                                Some(
+                                    "Le fichier exécutable local est introuvable à cet emplacement."
+                                        .into(),
+                                ),
+                            )
+                        } else {
+                            (false, None)
+                        }
+                    } else {
+                        (
+                            true,
+                            Some(
+                                "L’emplacement de l’installation locale n’est pas spécifié.".into(),
+                            ),
+                        )
+                    };
+
+                    if let Some(ref dir) = installation.installation {
+                        items.push(format!("Dossier d’installation : {dir}"));
+                    } else if let Some(ref exe) = installation.path {
+                        items.push(format!("Fichier exécutable : {exe}"));
+                    }
+                    if let Some(ref launcher) = installation.reference {
+                        items.push(format!("Lanceur de bureau : {launcher}"));
+                    }
+                    if items.is_empty() {
+                        items.push(format!("Application locale : {}", installation.name));
+                    }
+
+                    let impact = "Le dossier (ou binaire) d’installation local et son lanceur .desktop seront supprimés. Vos données dans ~/.config ou vos documents personnels ne sont pas supprimés automatiquement.".into();
+                    (false, items, impact, blocked, reason)
+                }
             };
 
         let target_path = match installation.format {
-            PackageFormat::Appimage => installation.path.clone(),
+            PackageFormat::Appimage | PackageFormat::Local => installation.path.clone(),
             PackageFormat::Flatpak => installation
                 .reference
                 .clone()
@@ -578,10 +654,97 @@ impl TransactionManager {
             PackageFormat::Appimage => self
                 .execute_appimage_removal(plan)
                 .map_err(|e| (OperationStatus::Failed, e)),
+            PackageFormat::Local => self
+                .execute_local_removal(plan)
+                .map_err(|e| (OperationStatus::Failed, e)),
             PackageFormat::Flatpak => self.execute_flatpak_removal(plan),
             PackageFormat::Deb => self.execute_deb_removal(plan),
             PackageFormat::Snap => self.execute_snap_removal(plan),
         }
+    }
+
+    fn execute_local_removal(&self, plan: &UninstallPlan) -> Result<String, AppError> {
+        if plan.scope != "user" {
+            return Err(AppError::new(
+                "OPERATION_BLOCKED",
+                "La suppression automatique est limitée aux installations locales dans votre dossier personnel.",
+            ));
+        }
+
+        let launcher_path = plan
+            .affected_items
+            .iter()
+            .find_map(|item| item.strip_prefix("Lanceur de bureau : "))
+            .map(PathBuf::from);
+
+        if let Some(ref launcher) = launcher_path {
+            validate_safe_user_desktop_launcher(launcher)?;
+        }
+
+        if let Some(ref dir_str) = plan.target_installation {
+            let dir = PathBuf::from(dir_str);
+            validate_safe_local_install_dir(&dir)?;
+            if !dir.exists() {
+                return Err(AppError::new(
+                    "LOCAL_TARGET_NOT_FOUND",
+                    "Le dossier d’installation local n’existe plus à cet emplacement.",
+                ));
+            }
+            fs::remove_dir_all(&dir).map_err(|e| {
+                AppError::new(
+                    "LOCAL_REMOVE_FAILED",
+                    &format!("Impossible de supprimer le dossier local : {e}"),
+                )
+            })?;
+            if dir.symlink_metadata().is_ok() {
+                return Err(AppError::new(
+                    "LOCAL_VERIFY_FAILED",
+                    "Le dossier d’installation local est toujours présent après suppression.",
+                ));
+            }
+        } else if let Some(ref exe_str) = plan.target_path {
+            let exe = PathBuf::from(exe_str);
+            validate_safe_user_file_path(&exe)?;
+            if !exe.exists() {
+                return Err(AppError::new(
+                    "LOCAL_TARGET_NOT_FOUND",
+                    "Le fichier exécutable local n’existe plus à cet emplacement.",
+                ));
+            }
+            fs::remove_file(&exe).map_err(|e| {
+                AppError::new(
+                    "LOCAL_REMOVE_FAILED",
+                    &format!("Impossible de supprimer le fichier exécutable local : {e}"),
+                )
+            })?;
+            if exe.symlink_metadata().is_ok() {
+                return Err(AppError::new(
+                    "LOCAL_VERIFY_FAILED",
+                    "Le fichier exécutable local est toujours présent après suppression.",
+                ));
+            }
+        } else {
+            return Err(AppError::new(
+                "LOCAL_NO_PATH",
+                "Aucun chemin d’installation local n’est associé à ce plan.",
+            ));
+        }
+
+        if let Some(ref launcher) = launcher_path {
+            if launcher.symlink_metadata().is_ok() {
+                fs::remove_file(launcher).map_err(|e| {
+                    AppError::new(
+                        "LOCAL_LAUNCHER_REMOVE_FAILED",
+                        &format!("Application retirée mais échec de suppression du lanceur : {e}"),
+                    )
+                })?;
+            }
+        }
+
+        Ok(format!(
+            "L’application locale {} a été supprimée avec succès.",
+            plan.target_name
+        ))
     }
 
     fn execute_appimage_removal(&self, plan: &UninstallPlan) -> Result<String, AppError> {
@@ -873,6 +1036,19 @@ pub fn reconcile_interrupted_operations() -> usize {
                 Ok(()) => "le paquet Snap n’est plus détecté sur le système",
                 Err(_) => "le paquet Snap est toujours détecté sur le système",
             },
+            PackageFormat::Local => {
+                let target = op
+                    .target_installation
+                    .as_deref()
+                    .or(op.target_path.as_deref());
+                match target {
+                    Some(path) if Path::new(path).symlink_metadata().is_ok() => {
+                        "l’installation locale est toujours présente sur le disque"
+                    }
+                    Some(_) => "l’installation locale n’est plus présente sur le disque",
+                    None => "chemin local inconnu",
+                }
+            }
         };
 
         let summary = format!(
@@ -935,6 +1111,102 @@ pub(crate) fn deb_plan_packages_changed(
     simulated_installed
         .iter()
         .any(|pkg| !planned_installed.contains(pkg.as_str()))
+}
+
+pub fn validate_safe_local_install_dir(path: &Path) -> Result<(), AppError> {
+    if !path.is_absolute() {
+        return Err(AppError::new(
+            "INVALID_PATH",
+            "Le chemin du dossier d’installation doit être absolu.",
+        ));
+    }
+    let path_str = path.to_string_lossy();
+    if path_str.contains('\0') || path_str.contains("..") {
+        return Err(AppError::new(
+            "INVALID_PATH",
+            "Le chemin contient des séquences non autorisées.",
+        ));
+    }
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .ok_or_else(|| {
+            AppError::new(
+                "UNSAFE_LOCATION",
+                "Impossible de vérifier le dossier personnel.",
+            )
+        })?;
+    let canonical_home = home.canonicalize().unwrap_or(home);
+    let canonical_dir = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+    if !canonical_dir.starts_with(&canonical_home) {
+        return Err(AppError::new(
+            "UNSAFE_LOCATION",
+            "Le dossier d’installation doit se trouver dans votre dossier personnel.",
+        ));
+    }
+    let expected = crate::providers::local::infer_app_install_root(
+        &canonical_dir.join("_probe"),
+        &canonical_home,
+    );
+    if expected.as_deref() != Some(canonical_dir.as_path()) {
+        return Err(AppError::new(
+            "FORBIDDEN_PATH",
+            "Ce dossier est un répertoire partagé ou protégé et ne peut pas être supprimé.",
+        ));
+    }
+    Ok(())
+}
+
+pub fn validate_safe_user_desktop_launcher(path: &Path) -> Result<(), AppError> {
+    if !path.is_absolute() || path.extension().is_none_or(|ext| ext != "desktop") || path.is_dir() {
+        return Err(AppError::new(
+            "INVALID_PATH",
+            "Le chemin du lanceur .desktop est invalide.",
+        ));
+    }
+    let path_str = path.to_string_lossy();
+    if path_str.contains('\0') || path_str.contains("..") {
+        return Err(AppError::new(
+            "INVALID_PATH",
+            "Le chemin du lanceur .desktop contient des séquences non autorisées.",
+        ));
+    }
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .ok_or_else(|| {
+            AppError::new(
+                "UNSAFE_LOCATION",
+                "Impossible de vérifier le dossier personnel.",
+            )
+        })?;
+    let mut allowed_dirs = vec![home.join(".local/share/applications")];
+    if let Some(xdg) = std::env::var_os("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+    {
+        allowed_dirs.push(xdg.join("applications"));
+    }
+    let parent = path
+        .parent()
+        .and_then(|p| p.canonicalize().ok().or_else(|| Some(p.to_path_buf())))
+        .ok_or_else(|| {
+            AppError::new(
+                "INVALID_PATH",
+                "Le dossier parent du lanceur .desktop est invalide.",
+            )
+        })?;
+    let in_allowed = allowed_dirs.into_iter().any(|dir| {
+        let canonical_allowed = dir.canonicalize().unwrap_or(dir);
+        parent == canonical_allowed
+    });
+    if !in_allowed {
+        return Err(AppError::new(
+            "FORBIDDEN_PATH",
+            "Seuls les lanceurs .desktop de votre dossier utilisateur peuvent être retirés.",
+        ));
+    }
+    Ok(())
 }
 
 pub fn validate_safe_user_file_path(path: &Path) -> Result<(), AppError> {
@@ -1917,5 +2189,105 @@ mod tests {
 2: POSIX  ADVISORY  WRITE 22451 08:01:10224209 0 EOF
 ";
         assert!(proc_locks_has_write_lock(active, &targets));
+    }
+
+    #[test]
+    fn uninstalls_local_user_application_and_blocks_opt_system_install() {
+        let _lock = crate::storage::TEST_STORAGE_LOCK.lock().unwrap();
+        let prev_home = std::env::var_os("HOME");
+        let temp_home = std::env::temp_dir().join(format!(
+            "panel_center_test_local_uninstall_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&temp_home);
+        let app_root = temp_home.join(".local/ABDownloadManager");
+        let app_bin = app_root.join("bin/ABDownloadManager");
+        let apps_dir = temp_home.join(".local/share/applications");
+        fs::create_dir_all(app_bin.parent().unwrap()).unwrap();
+        fs::create_dir_all(&apps_dir).unwrap();
+        fs::write(&app_bin, b"binary").unwrap();
+        let launcher = apps_dir.join("com.abdownloadmanager.desktop");
+        fs::write(
+            &launcher,
+            b"[Desktop Entry]\nType=Application\nName=AB Download Manager\n",
+        )
+        .unwrap();
+
+        std::env::set_var("HOME", &temp_home);
+        std::env::set_var("PANEL_CENTER_DATA_DIR", &temp_home);
+        std::env::set_var("PANEL_CENTER_CONFIG_DIR", &temp_home);
+
+        let manager = TransactionManager {
+            plans: Mutex::new(HashMap::new()),
+            current_operation: Mutex::new(None),
+        };
+
+        // 1. User-owned local app uninstall succeeds and removes both folder and .desktop
+        let user_app = ApplicationInstallation {
+            id: format!("local:user:{}", launcher.display()),
+            name: "AB Download Manager".into(),
+            native_id: "com.abdownloadmanager".into(),
+            version: "".into(),
+            format: PackageFormat::Local,
+            scope: "user".into(),
+            description: "Downloader".into(),
+            installed_size: Some(6),
+            reported_size: None,
+            installation: Some(app_root.to_string_lossy().into()),
+            reference: Some(launcher.to_string_lossy().into()),
+            path: Some(app_bin.to_string_lossy().into()),
+            is_executable: Some(true),
+            is_desktop_application: true,
+            can_uninstall: true,
+            unavailable_reason: "".into(),
+        };
+
+        let plan = manager
+            .prepare(&user_app, UninstallPlanOptions::default())
+            .expect("prepare local user app");
+        assert!(!plan.is_blocked);
+        assert!(!plan.requires_auth);
+
+        let op = manager.confirm(&plan.id).expect("confirm local uninstall");
+        assert_eq!(op.status, OperationStatus::Completed);
+        assert!(!app_root.exists());
+        assert!(!launcher.exists());
+
+        // 2. System /opt local app is blocked for safety
+        let opt_app = ApplicationInstallation {
+            id: "local:system:/home/test/.local/share/applications/antigravity.desktop".into(),
+            name: "Antigravity".into(),
+            native_id: "antigravity".into(),
+            version: "".into(),
+            format: PackageFormat::Local,
+            scope: "system".into(),
+            description: "".into(),
+            installed_size: None,
+            reported_size: None,
+            installation: Some("/opt/Antigravity".into()),
+            reference: None,
+            path: Some("/opt/Antigravity/antigravity".into()),
+            is_executable: Some(true),
+            is_desktop_application: true,
+            can_uninstall: false,
+            unavailable_reason: "".into(),
+        };
+
+        let blocked_plan = manager
+            .prepare(&opt_app, UninstallPlanOptions::default())
+            .expect("prepare opt app");
+        assert!(blocked_plan.is_blocked);
+
+        // 3. Shared directory like ~/.local/bin must be rejected by validator
+        assert!(validate_safe_local_install_dir(&temp_home.join(".local/bin")).is_err());
+        assert!(validate_safe_local_install_dir(&temp_home.join(".local")).is_err());
+        assert!(validate_safe_local_install_dir(&temp_home).is_err());
+
+        let _ = fs::remove_dir_all(&temp_home);
+        if let Some(h) = prev_home {
+            std::env::set_var("HOME", h);
+        }
+        std::env::remove_var("PANEL_CENTER_DATA_DIR");
+        std::env::remove_var("PANEL_CENTER_CONFIG_DIR");
     }
 }

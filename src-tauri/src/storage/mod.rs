@@ -75,6 +75,7 @@ fn format_to_str(format: PackageFormat) -> &'static str {
         PackageFormat::Snap => "snap",
         PackageFormat::Flatpak => "flatpak",
         PackageFormat::Appimage => "appimage",
+        PackageFormat::Local => "local",
     }
 }
 
@@ -84,6 +85,7 @@ fn str_to_format(value: &str) -> Option<PackageFormat> {
         "snap" => Some(PackageFormat::Snap),
         "flatpak" => Some(PackageFormat::Flatpak),
         "appimage" => Some(PackageFormat::Appimage),
+        "local" => Some(PackageFormat::Local),
         _ => None,
     }
 }

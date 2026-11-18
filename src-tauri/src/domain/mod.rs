@@ -9,6 +9,7 @@ pub enum PackageFormat {
     Snap,
     Flatpak,
     Appimage,
+    Local,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

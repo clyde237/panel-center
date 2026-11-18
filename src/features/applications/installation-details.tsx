@@ -3,7 +3,7 @@ import { Package, Trash2, X } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type { ApplicationInstallation } from "@/lib/contracts";
 import { formatSize } from "@/lib/utils";
-import { installationSize, scopeLabel } from "@/lib/installations";
+import { formatLabel, installationSize, scopeLabel } from "@/lib/installations";
 
 export function InstallationDetails({
   installation,
@@ -65,7 +65,7 @@ export function InstallationDetails({
             </div>
             <div>
               <dt>Format</dt>
-              <dd>{installation.format.toUpperCase()}</dd>
+              <dd>{formatLabel(installation.format)}</dd>
             </div>
             <div>
               <dt>Installation</dt>
@@ -75,10 +75,22 @@ export function InstallationDetails({
               <dt>Taille installée déclarée</dt>
               <dd>{installationSize(installation, formatSize)}</dd>
             </div>
+            {installation.format === "local" && installation.installation && (
+              <div>
+                <dt>Dossier d’installation</dt>
+                <dd className="break-all font-mono text-xs">
+                  {installation.installation}
+                </dd>
+              </div>
+            )}
             {installation.reference && (
               <div>
                 <dt>
-                  {installation.format === "snap" ? "Révision" : "Référence"}
+                  {installation.format === "snap"
+                    ? "Révision"
+                    : installation.format === "local"
+                      ? "Lanceur .desktop"
+                      : "Référence"}
                 </dt>
                 <dd className="break-all font-mono text-xs">
                   {installation.reference}

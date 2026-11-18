@@ -54,9 +54,51 @@ pub const MIGRATIONS: &[Migration] = &[
             );
         "#,
     },
+    Migration {
+        version: 3,
+        name: "support_local_package_format",
+        sql: r#"
+            CREATE TABLE operation_history_v3 (
+                id TEXT PRIMARY KEY,
+                operation_id TEXT NOT NULL,
+                target_name TEXT NOT NULL,
+                native_id TEXT NOT NULL,
+                format TEXT NOT NULL CHECK (format IN ('deb', 'snap', 'flatpak', 'appimage', 'local')),
+                status TEXT NOT NULL CHECK (status IN ('pending', 'running', 'verifying', 'completed', 'failed', 'cancelled')),
+                summary TEXT NOT NULL,
+                diagnostic TEXT NOT NULL,
+                timestamp INTEGER NOT NULL
+            );
+            INSERT INTO operation_history_v3
+                SELECT id, operation_id, target_name, native_id, format, status, summary, diagnostic, timestamp
+                FROM operation_history;
+            DROP TABLE operation_history;
+            ALTER TABLE operation_history_v3 RENAME TO operation_history;
+            CREATE INDEX IF NOT EXISTS idx_operation_history_timestamp
+                ON operation_history (timestamp DESC);
+
+            CREATE TABLE in_flight_operations_v3 (
+                operation_id TEXT PRIMARY KEY,
+                plan_id TEXT NOT NULL,
+                target_id TEXT NOT NULL,
+                target_name TEXT NOT NULL,
+                native_id TEXT NOT NULL,
+                format TEXT NOT NULL CHECK (format IN ('deb', 'snap', 'flatpak', 'appimage', 'local')),
+                scope TEXT NOT NULL,
+                target_path TEXT,
+                target_installation TEXT,
+                started_at INTEGER NOT NULL
+            );
+            INSERT INTO in_flight_operations_v3
+                SELECT operation_id, plan_id, target_id, target_name, native_id, format, scope, target_path, target_installation, started_at
+                FROM in_flight_operations;
+            DROP TABLE in_flight_operations;
+            ALTER TABLE in_flight_operations_v3 RENAME TO in_flight_operations;
+        "#,
+    },
 ];
 
-pub const LATEST_SCHEMA_VERSION: i64 = 2;
+pub const LATEST_SCHEMA_VERSION: i64 = 3;
 
 fn now_secs() -> i64 {
     SystemTime::now()

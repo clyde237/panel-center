@@ -10,6 +10,7 @@ import {
   updatePreferences,
 } from "@/lib/desktop";
 import { applyTheme } from "@/lib/theme";
+import { formatLabel } from "@/lib/installations";
 
 interface SettingsViewProps {
   system: SystemInfo | null;
@@ -72,7 +73,7 @@ export function SettingsView({
     }
   };
 
-  const formats = ["deb", "snap", "flatpak", "appimage"] as const;
+  const formats = ["deb", "snap", "flatpak", "appimage", "local"] as const;
   const displayedExtraPaths = Array.from(
     new Set([...prefs.appimageFolders, ...extraPaths]),
   );
@@ -224,9 +225,7 @@ export function SettingsView({
             }))
           ).map((p) => (
             <div key={p.format} className="provider-setting">
-              <strong>
-                {p.format === "appimage" ? "AppImage" : p.format.toUpperCase()}
-              </strong>
+              <strong>{formatLabel(p.format)}</strong>
               <p>{p.message}</p>
             </div>
           ))}

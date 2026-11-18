@@ -1,4 +1,4 @@
-export type PackageFormat = "deb" | "snap" | "flatpak" | "appimage";
+export type PackageFormat = "deb" | "snap" | "flatpak" | "appimage" | "local";
 
 export interface ApplicationInstallation {
   id: string;
