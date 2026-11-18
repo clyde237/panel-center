@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { ApplicationInstallation } from "./contracts.ts";
 import {
+  DEFAULT_APPLICATIONS_VIEW_MODE,
   filterInstallations,
+  resolveApplicationsViewMode,
   scopeLabel,
   installationSize,
 } from "./installations.ts";
@@ -98,4 +100,12 @@ test("reported Flatpak sizes are displayed without inventing exact byte counts",
     installationSize(item({ installedSize: 1024 }), () => "exact"),
     "exact",
   );
+});
+
+test("applications view defaults to list and accepts grid", () => {
+  assert.equal(DEFAULT_APPLICATIONS_VIEW_MODE, "list");
+  assert.equal(resolveApplicationsViewMode(undefined), "list");
+  assert.equal(resolveApplicationsViewMode("list"), "list");
+  assert.equal(resolveApplicationsViewMode("grid"), "grid");
+  assert.equal(resolveApplicationsViewMode("unknown"), "list");
 });

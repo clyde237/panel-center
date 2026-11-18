@@ -91,6 +91,30 @@ pub struct UninstallPlanOptions {
     pub remove_data: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DebAffectedPackage {
+    pub name: String,
+    pub version: String,
+    pub installed_size: Option<u64>,
+    pub description: String,
+    pub is_target: bool,
+    pub is_protected: bool,
+    pub action: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DebDependencyPreview {
+    pub target_package: String,
+    pub removed_packages: Vec<DebAffectedPackage>,
+    pub dependent_packages: Vec<DebAffectedPackage>,
+    pub newly_installed_packages: Vec<String>,
+    pub autoremove_candidates: Vec<String>,
+    pub blocking_dependents: Vec<String>,
+    pub total_freed_bytes: Option<u64>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UninstallPlan {
@@ -101,8 +125,12 @@ pub struct UninstallPlan {
     pub scope: String,
     pub native_id: String,
     pub target_path: Option<String>,
+    #[serde(default)]
+    pub target_installation: Option<String>,
     pub options: UninstallPlanOptions,
     pub affected_items: Vec<String>,
+    #[serde(default)]
+    pub deb_preview: Option<DebDependencyPreview>,
     pub data_impact: String,
     pub estimated_freed_space: Option<String>,
     pub requires_auth: bool,

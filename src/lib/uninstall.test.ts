@@ -249,3 +249,100 @@ test("Protected vital Ubuntu package contract includes kernel and grub", () => {
   assert.equal(isVitalDeb("vlc"), false);
   assert.equal(isVitalDeb("firefox"), false);
 });
+
+test("UninstallPlan supports named Flatpak system installation and Polkit auth flag", () => {
+  const plan: UninstallPlan = {
+    id: "plan_flatpak_sys_1",
+    targetId: "flatpak:system:extra:app/org.videolan.VLC/x86_64/stable",
+    targetName: "VLC",
+    format: "flatpak",
+    scope: "system",
+    nativeId: "org.videolan.VLC",
+    targetPath: "app/org.videolan.VLC/x86_64/stable",
+    targetInstallation: "extra",
+    options: {
+      purgeConfig: false,
+      removeData: false,
+    },
+    affectedItems: [
+      "Flatpak (system · extra) : app/org.videolan.VLC/x86_64/stable",
+    ],
+    dataImpact: "L’application Flatpak sera désinstallée.",
+    estimatedFreedSpace: "120 MB",
+    requiresAuth: true,
+    isBlocked: false,
+    blockedReason: null,
+    createdAt: 1000,
+    expiresAt: 1300,
+  };
+
+  assert.equal(plan.requiresAuth, true);
+  assert.equal(plan.targetInstallation, "extra");
+  assert.equal(plan.isBlocked, false);
+});
+
+test("UninstallPlan carries full APT dependency preview breakdown", () => {
+  const plan: UninstallPlan = {
+    id: "plan_deb_vlc_1",
+    targetId: "deb:system:vlc",
+    targetName: "VLC",
+    format: "deb",
+    scope: "system",
+    nativeId: "vlc",
+    options: {
+      purgeConfig: false,
+      removeData: false,
+    },
+    affectedItems: ["Paquet DEB : vlc", "Dépendance retirée : vlc-plugin-qt"],
+    debPreview: {
+      targetPackage: "vlc",
+      removedPackages: [
+        {
+          name: "vlc",
+          version: "3.0.20-3",
+          installedSize: 1024 * 500,
+          description: "Lecteur multimédia",
+          isTarget: true,
+          isProtected: false,
+          action: "remove",
+        },
+        {
+          name: "vlc-plugin-qt",
+          version: "3.0.20-3",
+          installedSize: 1024 * 1200,
+          description: "Interface Qt de VLC",
+          isTarget: false,
+          isProtected: false,
+          action: "remove",
+        },
+      ],
+      dependentPackages: [
+        {
+          name: "vlc-plugin-qt",
+          version: "3.0.20-3",
+          installedSize: 1024 * 1200,
+          description: "Interface Qt de VLC",
+          isTarget: false,
+          isProtected: false,
+          action: "remove",
+        },
+      ],
+      newlyInstalledPackages: [],
+      autoremoveCandidates: ["libvlc5"],
+      blockingDependents: [],
+      totalFreedBytes: 1024 * 1700,
+    },
+    dataImpact: "Le paquet sera retiré.",
+    estimatedFreedSpace: "1,7 Mo",
+    requiresAuth: true,
+    isBlocked: false,
+    blockedReason: null,
+    createdAt: 1000,
+    expiresAt: 1300,
+  };
+
+  assert.equal(plan.debPreview?.removedPackages.length, 2);
+  assert.equal(plan.debPreview?.dependentPackages.length, 1);
+  assert.deepEqual(plan.debPreview?.autoremoveCandidates, ["libvlc5"]);
+  assert.equal(plan.debPreview?.totalFreedBytes, 1024 * 1700);
+});

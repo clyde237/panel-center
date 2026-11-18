@@ -49,6 +49,38 @@
   background: #1c2420;
   border-color: #2c3a32;
 }
+.dark .view-toggle {
+  background: #161d19;
+  border-color: #2c3a32;
+}
+.dark .view-toggle-btn {
+  color: #95a39b;
+}
+.dark .view-toggle-btn:not(.view-toggle-btn-active):hover {
+  color: #e2e8e4;
+  background: #222d27;
+}
+.dark .view-toggle-btn-active {
+  background: #24352b;
+  color: #9ee0be;
+  box-shadow: none;
+}
+.dark .applications-grid {
+  border-block-start-color: #28352e;
+}
+.dark .app-card {
+  background: #18201c;
+  border-color: #2c3a32;
+}
+.dark .app-card-version {
+  color: #95a39b;
+}
+.dark .app-card-footer {
+  border-top-color: #28352e;
+}
+.dark .app-card-action-cue {
+  color: #95a39b;
+}
 * {
   box-sizing: border-box;
 }
@@ -325,6 +357,49 @@ h1 {
   padding: 0 28px 0 10px;
   max-width: 180px;
 }
+.view-toggle {
+  display: inline-flex;
+  align-items: safe center;
+  gap: 2px;
+  padding: 3px;
+  min-block-size: 40px;
+  margin-inline-start: auto;
+  border: 1px solid #dce1de;
+  border-radius: 6px;
+  background: #f4f6f5;
+}
+.view-toggle-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-block-size: 32px;
+  min-inline-size: 32px;
+  padding-inline: 10px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: #59655e;
+  font-size: 12px;
+  font-weight: 500;
+  transition:
+    background-color 0.15s ease,
+    color 0.15s ease;
+}
+.view-toggle-btn:not(.view-toggle-btn-active):hover {
+  color: #232b27;
+  background: #e8ede9;
+}
+.view-toggle-btn-active {
+  background: #fff;
+  color: #244d37;
+  box-shadow: 0 1px 2px #14221a14;
+}
+@media (pointer: coarse) {
+  .view-toggle-btn {
+    min-block-size: 40px;
+  }
+}
 .list-meta {
   display: flex;
   justify-content: space-between;
@@ -346,9 +421,124 @@ h1 {
   width: 13px;
   height: 13px;
 }
-.table-scroll {
-  max-height: 570px;
+.table-scroll,
+.grid-scroll {
+  max-block-size: 570px;
   overflow: auto;
+  scrollbar-gutter: stable;
+  overscroll-behavior: contain;
+}
+.applications-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  gap: 14px;
+  padding: 18px 20px;
+  margin: 0;
+  list-style: none;
+  border-block-start: 1px solid #edf0ec;
+}
+.applications-grid-item {
+  display: grid;
+  grid-row: span 3;
+  grid-template-rows: auto 1fr auto;
+  grid-template-rows: subgrid;
+  row-gap: 0;
+  min-inline-size: 0;
+}
+.app-card {
+  position: relative;
+  display: grid;
+  grid-row: 1 / -1;
+  grid-template-rows: auto 1fr auto;
+  grid-template-rows: subgrid;
+  row-gap: 12px;
+  padding: 16px;
+  border: 1px solid #e4e8e4;
+  border-radius: 9px;
+  background: #fff;
+  min-inline-size: 0;
+  transition:
+    border-color 0.15s ease,
+    background-color 0.15s ease;
+}
+.app-card-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  min-inline-size: 0;
+}
+.app-card-heading {
+  min-inline-size: 0;
+  flex: 1;
+}
+.app-card-heading h2 {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.35;
+}
+.app-card-trigger {
+  border: 0;
+  background: none;
+  padding: 0;
+  text-align: left;
+  color: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+.app-card-trigger::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+}
+@supports selector(:has(*)) {
+  .app-card .app-card-trigger:focus-visible {
+    outline: none;
+  }
+  .app-card:has(.app-card-trigger:focus-visible) {
+    outline: 2px solid var(--color-ring);
+    outline-offset: 2px;
+  }
+  .app-card:has(.app-card-trigger:hover) {
+    border-color: #c5d4c9;
+    background: #fafcf9;
+  }
+  .dark .app-card:has(.app-card-trigger:hover) {
+    border-color: #3d8a68;
+    background: #1e2923;
+  }
+}
+.app-card-version {
+  margin: 4px 0 0;
+  font-size: 11px;
+  color: #7e867f;
+  overflow-wrap: anywhere;
+}
+.app-card-meta {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-self: start;
+}
+.app-card-meta .scope-label {
+  margin-top: 0;
+}
+.app-card-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  border-top: 1px solid #f0f2ef;
+  padding-block-start: 10px;
+  font-size: 11px;
+}
+.app-card-action-cue {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #77827a;
 }
 .applications-table {
   border-collapse: collapse;
@@ -631,6 +821,14 @@ h1 {
   .format-select {
     width: 126px;
     font-size: 11px;
+  }
+  .view-toggle {
+    margin-inline-start: 0;
+  }
+  .applications-grid {
+    padding: 14px;
+    gap: 10px;
+    grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
   }
   .list-meta {
     padding-inline: 14px;

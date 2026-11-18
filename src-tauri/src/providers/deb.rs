@@ -117,6 +117,7 @@ fn parse_packages(content: &str, names: &HashMap<String, String>) -> Vec<Applica
         let name = names
             .get(native_id)
             .or_else(|| names.get(native_id.split(':').next().unwrap_or(native_id)));
+        let is_protected = crate::domain::protection::is_protected_deb(native_id);
         packages.push(ApplicationInstallation {
             id: format!("deb:system:{native_id}"),
             name: name.cloned().unwrap_or_else(|| native_id.to_string()),
@@ -132,11 +133,11 @@ fn parse_packages(content: &str, names: &HashMap<String, String>) -> Vec<Applica
             path: None,
             is_executable: None,
             is_desktop_application: name.is_some(),
-            can_uninstall: false,
-            unavailable_reason: if crate::domain::protection::is_protected_deb(native_id) {
+            can_uninstall: !is_protected,
+            unavailable_reason: if is_protected {
                 "Ce paquet est essentiel au fonctionnement du système Ubuntu et ne peut pas être supprimé.".into()
             } else {
-                "La désinstallation d’un paquet DEB système requiert des privilèges administrateur.".into()
+                String::new()
             },
         });
     }
@@ -158,8 +159,11 @@ mod tests {
         assert_eq!(editor.name, "Éditeur");
         assert!(editor.is_desktop_application);
         assert_eq!(editor.installed_size, Some(42 * 1024));
-        assert!(result.iter().all(|p| !p.can_uninstall));
+        assert!(editor.can_uninstall);
         assert_ne!(result[0].id, result[1].id);
+        let protected_data = "apt\t2.8\t1024\tii \tPackage manager";
+        let protected = parse_packages(protected_data, &HashMap::new());
+        assert!(!protected[0].can_uninstall);
     }
 
     #[test]

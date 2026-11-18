@@ -123,13 +123,17 @@ fn parse(body: &[u8]) -> Result<ProviderInventory, AppError> {
             Value::Number(number) => Some(number.to_string()),
             _ => None,
         });
-        item.is_desktop_application = !matches!(
+        let is_system_component = matches!(
             row.get("type").and_then(Value::as_str),
             Some("base" | "core" | "kernel" | "gadget" | "snapd")
-        );
-        item.can_uninstall = false;
-        item.unavailable_reason =
-            "La désinstallation d’un paquet Snap requiert des privilèges administrateur.".into();
+        ) || crate::domain::protection::is_protected_snap(name);
+        item.is_desktop_application = !is_system_component;
+        item.can_uninstall = !is_system_component;
+        item.unavailable_reason = if is_system_component {
+            "Ce composant Snap système est protégé et ne peut pas être retiré.".into()
+        } else {
+            String::new()
+        };
         result.installations.push(item);
     }
     Ok(result)

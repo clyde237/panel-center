@@ -1,9 +1,20 @@
 use crate::domain::{
-    protection::is_protected_deb, AppError, ApplicationInstallation, HistoryEntry, Operation,
+    protection::{is_protected_deb, is_protected_snap},
+    AppError, ApplicationInstallation, DebDependencyPreview, HistoryEntry, Operation,
     OperationStatus, PackageFormat, UninstallPlan, UninstallPlanOptions,
 };
-use crate::storage::append_history;
-use std::collections::HashMap;
+use crate::services::privileged::{
+    build_deb_pkexec_args, build_flatpak_system_pkexec_args, build_snap_pkexec_args,
+    flatpak_system_scope_flag, format_bytes_fr, query_deb_status, run_pkexec, simulate_deb_removal,
+    validate_deb_package_name, validate_flatpak_installation, validate_flatpak_ref,
+    validate_snap_name, verify_deb_removed, verify_flatpak_removed, verify_snap_removed,
+    FLATPAK_BIN, SNAP_BIN,
+};
+use crate::storage::{
+    append_history, list_in_flight_operations, record_in_flight_operation,
+    remove_in_flight_operation, InFlightOperation,
+};
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -120,12 +131,16 @@ impl TransactionManager {
             counter
         );
 
+        let mut deb_preview: Option<DebDependencyPreview> = None;
         let (requires_auth, affected_items, data_impact, is_blocked, blocked_reason) =
             match installation.format {
                 PackageFormat::Deb => {
-                    let items = vec![format!("Paquet DEB : {}", installation.native_id)];
-                    let (blocked, reason) = if is_protected_deb(&installation.native_id) {
+                    validate_deb_package_name(&installation.native_id)?;
+                    if is_protected_deb(&installation.native_id) {
                         (
+                            true,
+                            vec![format!("Paquet DEB : {}", installation.native_id)],
+                            "Ce paquet est protégé et ne sera pas modifié.".into(),
                             true,
                             Some(
                                 "Ce paquet est essentiel au fonctionnement du système Ubuntu et ne peut pas être supprimé."
@@ -135,36 +150,164 @@ impl TransactionManager {
                     } else if is_dpkg_locked() {
                         (
                             true,
+                            vec![format!("Paquet DEB : {}", installation.native_id)],
+                            "Une autre opération APT/dpkg est en cours.".into(),
+                            true,
                             Some(
                                 "Le gestionnaire de paquets APT/dpkg est actuellement verrouillé par une autre opération système. Veuillez réessayer ultérieurement."
                                     .into(),
                             ),
                         )
                     } else {
-                        (false, None)
-                    };
-                    let impact = if options.purge_config {
-                        "Le paquet sera supprimé avec ses fichiers de configuration système (/etc). Les fichiers personnels ne sont pas affectés."
-                            .into()
-                    } else {
-                        "Le paquet sera retiré. Ses fichiers de configuration système sont conservés pour une réinstallation ultérieure."
-                            .into()
-                    };
-                    (true, items, impact, blocked, reason)
+                        match simulate_deb_removal(&installation.native_id, options.purge_config) {
+                            Ok(sim) if !sim.is_installed => (
+                                true,
+                                vec![format!("Paquet DEB : {}", installation.native_id)],
+                                "Ce paquet n’est plus installé sur le système.".into(),
+                                true,
+                                Some(
+                                    "Le paquet DEB ciblé n’est plus installé sur le système. Actualisez l’inventaire."
+                                        .into(),
+                                ),
+                            ),
+                            Ok(sim) => {
+                                let has_blockers = !sim.preview.blocking_dependents.is_empty();
+                                let mut items: Vec<String> = sim
+                                    .preview
+                                    .removed_packages
+                                    .iter()
+                                    .map(|pkg| {
+                                        if pkg.is_target {
+                                            format!("Paquet DEB : {}", pkg.name)
+                                        } else {
+                                            format!("Dépendance retirée : {}", pkg.name)
+                                        }
+                                    })
+                                    .collect();
+                                if items.is_empty() {
+                                    items.push(format!("Paquet DEB : {}", installation.native_id));
+                                }
+                                for replacement in &sim.preview.newly_installed_packages {
+                                    items.push(format!(
+                                        "Installation de remplacement APT : {replacement}"
+                                    ));
+                                }
+
+                                let (blocked, reason) = if sim.is_essential_or_protected
+                                    || !sim.protected_in_cascade.is_empty()
+                                {
+                                    let protected_list = if sim.protected_in_cascade.is_empty() {
+                                        installation.native_id.clone()
+                                    } else {
+                                        sim.protected_in_cascade.join(", ")
+                                    };
+                                    (
+                                        true,
+                                        Some(format!(
+                                            "Cette suppression affecterait des composants système protégés ({protected_list}) et est bloquée par sécurité."
+                                        )),
+                                    )
+                                } else if has_blockers {
+                                    let blockers = sim
+                                        .preview
+                                        .blocking_dependents
+                                        .iter()
+                                        .take(6)
+                                        .cloned()
+                                        .collect::<Vec<_>>()
+                                        .join(", ");
+                                    (
+                                        true,
+                                        Some(format!(
+                                            "APT bloque la suppression en raison de dépendances requises par : {blockers}."
+                                        )),
+                                    )
+                                } else {
+                                    (false, None)
+                                };
+
+                                let dep_count = sim.preview.dependent_packages.len();
+                                let cascade_note = if dep_count > 0 {
+                                    format!(
+                                        " Attention : {dep_count} autre{} paquet{} dépendant{} ser{} retiré{} par APT (autoremove désactivé).",
+                                        if dep_count > 1 { "s" } else { "" },
+                                        if dep_count > 1 { "s" } else { "" },
+                                        if dep_count > 1 { "s" } else { "" },
+                                        if dep_count > 1 { "ont" } else { "a" },
+                                        if dep_count > 1 { "s" } else { "" },
+                                    )
+                                } else {
+                                    " Aucun autre paquet dépendant ne sera retiré (autoremove désactivé).".into()
+                                };
+                                let impact = if options.purge_config {
+                                    format!(
+                                        "Le paquet sera supprimé avec ses fichiers de configuration système (/etc). Les fichiers personnels ne sont pas affectés.{cascade_note}"
+                                    )
+                                } else {
+                                    format!(
+                                        "Le paquet sera retiré. Ses fichiers de configuration système sont conservés pour une réinstallation ultérieure.{cascade_note}"
+                                    )
+                                };
+                                deb_preview = Some(sim.preview);
+                                (true, items, impact, blocked, reason)
+                            }
+                            Err(err) => (
+                                true,
+                                vec![format!("Paquet DEB : {}", installation.native_id)],
+                                "Impossible de calculer l’aperçu APT.".into(),
+                                true,
+                                Some(err.message),
+                            ),
+                        }
+                    }
                 }
                 PackageFormat::Snap => {
+                    validate_snap_name(&installation.native_id)?;
                     let items = vec![format!("Snap : {}", installation.native_id)];
+                    let (blocked, reason) = if is_protected_snap(&installation.native_id) {
+                        (
+                            true,
+                            Some(
+                                "Ce composant Snap système est protégé et ne peut pas être retiré."
+                                    .into(),
+                            ),
+                        )
+                    } else if !Path::new(SNAP_BIN).exists() {
+                        (
+                            true,
+                            Some("Le gestionnaire Snap est indisponible sur ce système.".into()),
+                        )
+                    } else {
+                        (false, None)
+                    };
                     let impact =
                         "Le paquet Snap sera supprimé. Un instantané (snapshot) des données est automatiquement sauvegardé par snapd."
                             .into();
-                    (true, items, impact, false, None)
+                    (true, items, impact, blocked, reason)
                 }
                 PackageFormat::Flatpak => {
                     let ref_label = installation
                         .reference
                         .clone()
                         .unwrap_or_else(|| installation.native_id.clone());
-                    let items = vec![format!("Flatpak ({}) : {}", installation.scope, ref_label)];
+                    validate_flatpak_ref(&ref_label)?;
+                    if let Some(ref inst) = installation.installation {
+                        if !inst.is_empty() && inst != "user" {
+                            validate_flatpak_installation(inst)?;
+                        }
+                    }
+                    let scope_desc = match installation.installation.as_deref() {
+                        Some(inst)
+                            if installation.scope != "user"
+                                && !inst.is_empty()
+                                && inst != "default"
+                                && inst != "system" =>
+                        {
+                            format!("system · {inst}")
+                        }
+                        _ => installation.scope.clone(),
+                    };
+                    let items = vec![format!("Flatpak ({scope_desc}) : {ref_label}")];
                     let impact = if options.remove_data {
                         "L’application Flatpak et ses données utilisateur stockées dans ~/.var/app seront supprimées."
                             .into()
@@ -172,7 +315,15 @@ impl TransactionManager {
                         "L’application Flatpak sera désinstallée. Les données utilisateur dans ~/.var/app restent intactes."
                             .into()
                     };
-                    (installation.scope == "system", items, impact, false, None)
+                    let (blocked, reason) = if !Path::new(FLATPAK_BIN).exists() {
+                        (
+                            true,
+                            Some("Le gestionnaire Flatpak est indisponible sur ce système.".into()),
+                        )
+                    } else {
+                        (false, None)
+                    };
+                    (installation.scope != "user", items, impact, blocked, reason)
                 }
                 PackageFormat::Appimage => {
                     let mut items = Vec::new();
@@ -222,6 +373,13 @@ impl TransactionManager {
             _ => None,
         };
 
+        let estimated_freed_space = deb_preview
+            .as_ref()
+            .and_then(|p| p.total_freed_bytes)
+            .map(format_bytes_fr)
+            .or_else(|| installation.reported_size.clone())
+            .or_else(|| installation.installed_size.map(format_bytes_fr));
+
         let plan = UninstallPlan {
             id: plan_id.clone(),
             target_id: installation.id.clone(),
@@ -230,13 +388,12 @@ impl TransactionManager {
             scope: installation.scope.clone(),
             native_id: installation.native_id.clone(),
             target_path,
+            target_installation: installation.installation.clone(),
             options,
             affected_items,
+            deb_preview,
             data_impact,
-            estimated_freed_space: installation
-                .reported_size
-                .clone()
-                .or_else(|| installation.installed_size.map(|s| format!("{} octets", s))),
+            estimated_freed_space,
             requires_auth,
             is_blocked,
             blocked_reason,
@@ -321,26 +478,45 @@ impl TransactionManager {
             *op_guard = Some(operation.clone());
         }
 
+        // Persist in-flight state in SQLite so an abrupt crash can be reconciled on restart
+        let _ = record_in_flight_operation(&InFlightOperation {
+            operation_id: op_id.clone(),
+            plan_id: plan.id.clone(),
+            target_id: plan.target_id.clone(),
+            target_name: plan.target_name.clone(),
+            native_id: plan.native_id.clone(),
+            format: plan.format,
+            scope: plan.scope.clone(),
+            target_path: plan.target_path.clone(),
+            target_installation: plan.target_installation.clone(),
+            started_at: now,
+        });
+
         // 4. Execute operation
         let exec_result = self.execute_plan(&plan);
 
+        let _ = remove_in_flight_operation(&op_id);
+
         // 5. Update operation state
         let finish_time = current_timestamp();
-        let (final_status, final_msg, app_err) = match exec_result {
-            Ok(msg) => (OperationStatus::Completed, msg, None),
-            Err(err) => (
+        let (final_status, final_step, final_msg, app_err) = match exec_result {
+            Ok(msg) => (OperationStatus::Completed, "Terminé", msg, None),
+            Err((OperationStatus::Cancelled, err)) => (
+                OperationStatus::Cancelled,
+                "Annulé",
+                err.message.clone(),
+                Some(err),
+            ),
+            Err((_, err)) => (
                 OperationStatus::Failed,
+                "Échec",
                 format!("Échec de la désinstallation : {}", err.message),
                 Some(err),
             ),
         };
 
         operation.status = final_status;
-        operation.step = if final_status == OperationStatus::Completed {
-            "Terminé".into()
-        } else {
-            "Échec".into()
-        };
+        operation.step = final_step.into();
         operation.message = final_msg.clone();
         operation.error = app_err.clone();
         operation.finished_at = Some(finish_time);
@@ -367,16 +543,19 @@ impl TransactionManager {
         };
         let _ = append_history(history_entry);
 
-        if let Some(err) = app_err {
-            Err(err)
-        } else {
-            Ok(operation)
+        if final_status == OperationStatus::Failed {
+            if let Some(err) = app_err {
+                return Err(err);
+            }
         }
+        Ok(operation)
     }
 
-    fn execute_plan(&self, plan: &UninstallPlan) -> Result<String, AppError> {
+    fn execute_plan(&self, plan: &UninstallPlan) -> Result<String, (OperationStatus, AppError)> {
         match plan.format {
-            PackageFormat::Appimage => self.execute_appimage_removal(plan),
+            PackageFormat::Appimage => self
+                .execute_appimage_removal(plan)
+                .map_err(|e| (OperationStatus::Failed, e)),
             PackageFormat::Flatpak => self.execute_flatpak_removal(plan),
             PackageFormat::Deb => self.execute_deb_removal(plan),
             PackageFormat::Snap => self.execute_snap_removal(plan),
@@ -440,24 +619,19 @@ impl TransactionManager {
         ))
     }
 
-    fn execute_flatpak_removal(&self, plan: &UninstallPlan) -> Result<String, AppError> {
+    fn execute_flatpak_removal(
+        &self,
+        plan: &UninstallPlan,
+    ) -> Result<String, (OperationStatus, AppError)> {
+        let target_ref = plan
+            .target_path
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .unwrap_or(&plan.native_id);
+
+        validate_flatpak_ref(target_ref).map_err(|e| (OperationStatus::Failed, e))?;
+
         if plan.scope == "user" {
-            let target_ref = plan
-                .target_path
-                .as_deref()
-                .filter(|s| !s.is_empty())
-                .unwrap_or(&plan.native_id);
-
-            // Validation against flag injection and malformed identifiers
-            if target_ref.starts_with('-')
-                || target_ref.contains(|c: char| c.is_whitespace() || c == '\0')
-            {
-                return Err(AppError::new(
-                    "INVALID_IDENTIFIER",
-                    "L’identifiant Flatpak contient des caractères non autorisés.",
-                ));
-            }
-
             let mut args = vec!["uninstall", "--user", "-y", "--noninteractive"];
             if plan.options.remove_data {
                 args.push("--delete-data");
@@ -465,8 +639,8 @@ impl TransactionManager {
             args.push("--");
             args.push(target_ref);
 
-            let flatpak_bin = if Path::new("/usr/bin/flatpak").exists() {
-                "/usr/bin/flatpak"
+            let flatpak_bin = if Path::new(FLATPAK_BIN).exists() {
+                FLATPAK_BIN
             } else {
                 "flatpak"
             };
@@ -475,79 +649,270 @@ impl TransactionManager {
                 .args(&args)
                 .output()
                 .map_err(|e| {
-                    AppError::new(
-                        "FLATPAK_EXEC_FAILED",
-                        &format!("Impossible d’exécuter la commande Flatpak : {e}"),
+                    (
+                        OperationStatus::Failed,
+                        AppError::new(
+                            "FLATPAK_EXEC_FAILED",
+                            &format!("Impossible d’exécuter la commande Flatpak : {e}"),
+                        ),
                     )
                 })?;
 
             if !output.status.success() {
                 let stderr = String::from_utf8_lossy(&output.stderr);
-                return Err(AppError::new(
-                    "FLATPAK_UNINSTALL_ERROR",
-                    &format!("Erreur lors de la désinstallation Flatpak : {stderr}"),
+                return Err((
+                    OperationStatus::Failed,
+                    AppError::new(
+                        "FLATPAK_UNINSTALL_ERROR",
+                        &format!("Erreur lors de la désinstallation Flatpak : {stderr}"),
+                    ),
                 ));
             }
 
-            // Post-operation verification: check that application is no longer detected
-            let check_output = std::process::Command::new(flatpak_bin)
-                .args(["info", "--user", "--", target_ref])
-                .output();
-
-            if let Ok(check) = check_output {
-                if check.status.success() {
-                    return Err(AppError::new(
-                        "FLATPAK_VERIFY_FAILED",
-                        "L’application Flatpak est toujours détectée sur le système après la désinstallation.",
-                    ));
-                }
-            }
+            verify_flatpak_removed(target_ref, "--user")
+                .map_err(|e| (OperationStatus::Failed, e))?;
 
             Ok(format!(
                 "L’application Flatpak {} a été retirée avec succès.",
                 plan.target_name
             ))
         } else {
-            // System flatpak requires Polkit privileged helper
-            Err(AppError::new(
-                "AUTH_SERVICE_REQUIRED",
-                "La désinstallation d’une application Flatpak système requiert une autorisation administrateur Polkit.",
+            let (pkexec_args, scope_flag) = build_flatpak_system_pkexec_args(
+                target_ref,
+                plan.target_installation.as_deref(),
+                plan.options.remove_data,
+            )
+            .map_err(|e| (OperationStatus::Failed, e))?;
+
+            run_pkexec(&pkexec_args, "Flatpak")?;
+            verify_flatpak_removed(target_ref, &scope_flag)
+                .map_err(|e| (OperationStatus::Failed, e))?;
+
+            Ok(format!(
+                "L’application Flatpak système {} a été retirée avec succès.",
+                plan.target_name
             ))
         }
     }
 
-    fn execute_deb_removal(&self, plan: &UninstallPlan) -> Result<String, AppError> {
+    fn execute_deb_removal(
+        &self,
+        plan: &UninstallPlan,
+    ) -> Result<String, (OperationStatus, AppError)> {
+        validate_deb_package_name(&plan.native_id).map_err(|e| (OperationStatus::Failed, e))?;
+
         if is_protected_deb(&plan.native_id) {
-            return Err(AppError::new(
-                "OPERATION_BLOCKED",
-                "Ce paquet est essentiel au fonctionnement du système Ubuntu et ne peut pas être supprimé.",
+            return Err((
+                OperationStatus::Failed,
+                AppError::new(
+                    "OPERATION_BLOCKED",
+                    "Ce paquet est essentiel au fonctionnement du système Ubuntu et ne peut pas être supprimé.",
+                ),
             ));
         }
 
         if is_dpkg_locked() {
-            return Err(AppError::new(
-                "MANAGER_LOCKED",
-                "Le gestionnaire de paquets APT/dpkg est actuellement verrouillé par une autre opération système. Veuillez réessayer ultérieurement.",
+            return Err((
+                OperationStatus::Failed,
+                AppError::new(
+                    "MANAGER_LOCKED",
+                    "Le gestionnaire de paquets APT/dpkg est actuellement verrouillé par une autre opération système. Veuillez réessayer ultérieurement.",
+                ),
             ));
         }
 
-        // In development mode, system package removal requires the privileged D-Bus service
-        Err(AppError::new(
-            "AUTH_SERVICE_REQUIRED",
-            "La désinstallation d’un paquet DEB système requiert le service privilégié Polkit (environnement système avec paquet installé).",
+        // Re-evaluate consequences right before privileged execution
+        let simulation = simulate_deb_removal(&plan.native_id, plan.options.purge_config)
+            .map_err(|e| (OperationStatus::Failed, e))?;
+
+        if !simulation.is_installed {
+            return Err((
+                OperationStatus::Failed,
+                AppError::new(
+                    "TARGET_NOT_FOUND",
+                    "Le paquet DEB ciblé n’est plus installé sur le système.",
+                ),
+            ));
+        }
+
+        if simulation.is_essential_or_protected
+            || !simulation.protected_in_cascade.is_empty()
+            || !simulation.preview.blocking_dependents.is_empty()
+        {
+            return Err((
+                OperationStatus::Failed,
+                AppError::new(
+                    "OPERATION_BLOCKED",
+                    "Cette suppression affecterait des composants système protégés ou des dépendances bloquantes et a été stoppée avant exécution.",
+                ),
+            ));
+        }
+
+        if deb_plan_packages_changed(
+            plan,
+            &simulation.packages_to_remove,
+            &simulation.preview.newly_installed_packages,
+        ) {
+            return Err((
+                OperationStatus::Failed,
+                AppError::new(
+                    "PLAN_CHANGED",
+                    "Les paquets impactés ont changé depuis l’aperçu. Veuillez générer un nouvel aperçu avant de confirmer.",
+                ),
+            ));
+        }
+
+        let pkexec_args = build_deb_pkexec_args(&plan.native_id, plan.options.purge_config)
+            .map_err(|e| (OperationStatus::Failed, e))?;
+
+        run_pkexec(&pkexec_args, "APT")?;
+        verify_deb_removed(&plan.native_id).map_err(|e| (OperationStatus::Failed, e))?;
+
+        Ok(format!(
+            "Le paquet DEB {} a été retiré avec succès.",
+            plan.target_name
         ))
     }
 
-    fn execute_snap_removal(&self, _plan: &UninstallPlan) -> Result<String, AppError> {
-        Err(AppError::new(
-            "AUTH_SERVICE_REQUIRED",
-            "La suppression d’un paquet Snap requiert une autorisation administrateur Polkit.",
+    fn execute_snap_removal(
+        &self,
+        plan: &UninstallPlan,
+    ) -> Result<String, (OperationStatus, AppError)> {
+        validate_snap_name(&plan.native_id).map_err(|e| (OperationStatus::Failed, e))?;
+
+        if is_protected_snap(&plan.native_id) {
+            return Err((
+                OperationStatus::Failed,
+                AppError::new(
+                    "OPERATION_BLOCKED",
+                    "Ce composant Snap système est protégé et ne peut pas être retiré.",
+                ),
+            ));
+        }
+
+        let pkexec_args =
+            build_snap_pkexec_args(&plan.native_id).map_err(|e| (OperationStatus::Failed, e))?;
+
+        run_pkexec(&pkexec_args, "Snap")?;
+        verify_snap_removed(&plan.native_id).map_err(|e| (OperationStatus::Failed, e))?;
+
+        Ok(format!(
+            "Le paquet Snap {} a été retiré avec succès.",
+            plan.target_name
         ))
     }
 
     pub fn get_current_operation(&self) -> Option<Operation> {
         self.current_operation.lock().unwrap().clone()
     }
+}
+
+/// Reconciles operations that were interrupted by an abrupt app exit against the real
+/// local system state. Never invents a supposed success.
+pub fn reconcile_interrupted_operations() -> usize {
+    let pending = list_in_flight_operations();
+    let count = pending.len();
+    let now = current_timestamp();
+
+    for op in pending {
+        let local_state_note = match op.format {
+            PackageFormat::Appimage => match op.target_path.as_deref() {
+                Some(path) if Path::new(path).symlink_metadata().is_ok() => {
+                    "le fichier AppImage est toujours présent sur le disque"
+                }
+                Some(_) => "le fichier AppImage n’est plus présent sur le disque",
+                None => "chemin de fichier inconnu",
+            },
+            PackageFormat::Deb => match query_deb_status(&op.native_id) {
+                Ok((true, _)) => "le paquet DEB est toujours installé sur le système",
+                Ok((false, _)) => "le paquet DEB n’est plus détecté comme installé",
+                Err(_) => "état réel DEB non vérifiable automatiquement",
+            },
+            PackageFormat::Flatpak => {
+                let target_ref = op
+                    .target_path
+                    .as_deref()
+                    .filter(|s| !s.is_empty())
+                    .unwrap_or(&op.native_id);
+                let scope_flag = if op.scope == "user" {
+                    Ok("--user".to_string())
+                } else {
+                    flatpak_system_scope_flag(op.target_installation.as_deref())
+                };
+                match scope_flag {
+                    Ok(flag) => match verify_flatpak_removed(target_ref, &flag) {
+                        Ok(()) => "l’application Flatpak n’est plus détectée",
+                        Err(_) => "l’application Flatpak est toujours détectée sur le système",
+                    },
+                    Err(_) => "état réel Flatpak non vérifiable automatiquement",
+                }
+            }
+            PackageFormat::Snap => match verify_snap_removed(&op.native_id) {
+                Ok(()) => "le paquet Snap n’est plus détecté sur le système",
+                Err(_) => "le paquet Snap est toujours détecté sur le système",
+            },
+        };
+
+        let summary = format!(
+            "Opération interrompue avant sa fin — état local vérifié au redémarrage : {local_state_note}."
+        );
+        let entry = HistoryEntry {
+            id: format!("hist_{}", op.operation_id),
+            operation_id: op.operation_id.clone(),
+            target_name: op.target_name,
+            native_id: op.native_id,
+            format: op.format,
+            status: OperationStatus::Failed,
+            summary,
+            diagnostic: format!("OPERATION_INTERRUPTED: {local_state_note}"),
+            timestamp: now,
+        };
+        let _ = append_history(entry);
+        let _ = remove_in_flight_operation(&op.operation_id);
+    }
+
+    count
+}
+
+pub(crate) fn deb_plan_packages_changed(
+    plan: &UninstallPlan,
+    simulated_removed: &[String],
+    simulated_installed: &[String],
+) -> bool {
+    let mut planned_removed: HashSet<&str> = plan
+        .affected_items
+        .iter()
+        .filter_map(|item| {
+            item.strip_prefix("Paquet DEB : ")
+                .or_else(|| item.strip_prefix("Dépendance retirée : "))
+        })
+        .collect();
+    let mut planned_installed: HashSet<&str> = plan
+        .affected_items
+        .iter()
+        .filter_map(|item| item.strip_prefix("Installation de remplacement APT : "))
+        .collect();
+
+    if let Some(ref preview) = plan.deb_preview {
+        for pkg in &preview.removed_packages {
+            planned_removed.insert(pkg.name.as_str());
+        }
+        for pkg in &preview.newly_installed_packages {
+            planned_installed.insert(pkg.as_str());
+        }
+    }
+
+    if !planned_removed.is_empty()
+        && simulated_removed
+            .iter()
+            .any(|pkg| !planned_removed.contains(pkg.as_str()))
+    {
+        return true;
+    }
+
+    simulated_installed
+        .iter()
+        .any(|pkg| !planned_installed.contains(pkg.as_str()))
 }
 
 pub fn validate_safe_user_file_path(path: &Path) -> Result<(), AppError> {
@@ -1335,8 +1700,10 @@ mod tests {
             scope: "system".into(),
             native_id: "systemd".into(),
             target_path: None,
+            target_installation: None,
             options: UninstallPlanOptions::default(),
             affected_items: vec![],
+            deb_preview: None,
             data_impact: "".into(),
             estimated_freed_space: None,
             requires_auth: true,
@@ -1348,6 +1715,169 @@ mod tests {
 
         let result = manager.execute_deb_removal(&plan);
         assert!(result.is_err());
-        assert_eq!(result.unwrap_err().code, "OPERATION_BLOCKED");
+        let (_, err) = result.unwrap_err();
+        assert_eq!(err.code, "OPERATION_BLOCKED");
+    }
+
+    #[test]
+    fn prevents_uninstalling_protected_snap() {
+        let manager = TransactionManager {
+            plans: Mutex::new(HashMap::new()),
+            current_operation: Mutex::new(None),
+        };
+
+        let installation = ApplicationInstallation {
+            id: "snap:system:snapd".into(),
+            name: "snapd".into(),
+            native_id: "snapd".into(),
+            version: "2.66".into(),
+            format: PackageFormat::Snap,
+            scope: "system".into(),
+            description: "".into(),
+            installed_size: None,
+            reported_size: None,
+            installation: Some("system".into()),
+            reference: Some("23545".into()),
+            path: None,
+            is_executable: None,
+            is_desktop_application: false,
+            can_uninstall: false,
+            unavailable_reason: "".into(),
+        };
+
+        let plan = manager
+            .prepare(&installation, UninstallPlanOptions::default())
+            .expect("prepare returns blocked plan");
+        assert!(plan.is_blocked);
+        assert!(plan.requires_auth);
+
+        let tampered = UninstallPlan {
+            is_blocked: false,
+            ..plan
+        };
+        let (_, err) = manager.execute_snap_removal(&tampered).unwrap_err();
+        assert_eq!(err.code, "OPERATION_BLOCKED");
+    }
+
+    #[test]
+    fn flatpak_system_named_installation_preserved_in_plan() {
+        let manager = TransactionManager {
+            plans: Mutex::new(HashMap::new()),
+            current_operation: Mutex::new(None),
+        };
+
+        let installation = ApplicationInstallation {
+            id: "flatpak:system:extra:app/org.videolan.VLC/x86_64/stable".into(),
+            name: "VLC".into(),
+            native_id: "org.videolan.VLC".into(),
+            version: "3.0".into(),
+            format: PackageFormat::Flatpak,
+            scope: "system".into(),
+            description: "".into(),
+            installed_size: None,
+            reported_size: Some("120 MB".into()),
+            installation: Some("extra".into()),
+            reference: Some("app/org.videolan.VLC/x86_64/stable".into()),
+            path: None,
+            is_executable: None,
+            is_desktop_application: true,
+            can_uninstall: true,
+            unavailable_reason: "".into(),
+        };
+
+        let plan = manager
+            .prepare(&installation, UninstallPlanOptions::default())
+            .expect("prepare succeeds");
+        assert!(plan.requires_auth);
+        assert_eq!(plan.target_installation.as_deref(), Some("extra"));
+        assert_eq!(
+            plan.target_path.as_deref(),
+            Some("app/org.videolan.VLC/x86_64/stable")
+        );
+    }
+
+    #[test]
+    fn detects_unexpected_extra_deb_packages_before_execution() {
+        let plan = UninstallPlan {
+            id: "plan_change_check".into(),
+            target_id: "deb:system:vlc".into(),
+            target_name: "VLC".into(),
+            format: PackageFormat::Deb,
+            scope: "system".into(),
+            native_id: "vlc".into(),
+            target_path: None,
+            target_installation: None,
+            options: UninstallPlanOptions::default(),
+            affected_items: vec![
+                "Paquet DEB : vlc".into(),
+                "Dépendance retirée : vlc-bin".into(),
+            ],
+            deb_preview: None,
+            data_impact: "".into(),
+            estimated_freed_space: None,
+            requires_auth: true,
+            is_blocked: false,
+            blocked_reason: None,
+            created_at: 1000,
+            expires_at: 2000,
+        };
+        assert!(!deb_plan_packages_changed(
+            &plan,
+            &["vlc".into(), "vlc-bin".into()],
+            &[]
+        ));
+        assert!(deb_plan_packages_changed(
+            &plan,
+            &["vlc".into(), "vlc-bin".into(), "extra-pkg".into()],
+            &[]
+        ));
+        assert!(deb_plan_packages_changed(
+            &plan,
+            &["vlc".into(), "vlc-bin".into()],
+            &["unexpected-replacement".into()]
+        ));
+    }
+
+    #[test]
+    fn reconciles_interrupted_operation_without_inventing_success() {
+        let _lock = crate::storage::TEST_STORAGE_LOCK.lock().unwrap();
+        let temp_dir = std::env::temp_dir().join(format!(
+            "panel_center_test_reconcile_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&temp_dir);
+        fs::create_dir_all(&temp_dir).unwrap();
+        std::env::set_var("PANEL_CENTER_DATA_DIR", &temp_dir);
+        std::env::set_var("PANEL_CENTER_CONFIG_DIR", &temp_dir);
+
+        let existing_file = temp_dir.join("still_here.AppImage");
+        fs::write(&existing_file, b"appimage").unwrap();
+
+        record_in_flight_operation(&InFlightOperation {
+            operation_id: "op_interrupted_1".into(),
+            plan_id: "plan_interrupted".into(),
+            target_id: format!("appimage:{}", existing_file.display()),
+            target_name: "InterruptedApp".into(),
+            native_id: "interrupted-app".into(),
+            format: PackageFormat::Appimage,
+            scope: "user".into(),
+            target_path: Some(existing_file.to_string_lossy().into()),
+            target_installation: None,
+            started_at: current_timestamp(),
+        })
+        .expect("record in-flight");
+
+        let reconciled = reconcile_interrupted_operations();
+        assert_eq!(reconciled, 1);
+        assert!(list_in_flight_operations().is_empty());
+
+        let history = crate::storage::load_history();
+        assert_eq!(history.len(), 1);
+        assert_eq!(history[0].status, OperationStatus::Failed);
+        assert!(history[0].summary.contains("toujours présent"));
+
+        let _ = fs::remove_dir_all(&temp_dir);
+        std::env::remove_var("PANEL_CENTER_DATA_DIR");
+        std::env::remove_var("PANEL_CENTER_CONFIG_DIR");
     }
 }
